@@ -192,6 +192,32 @@ describe("phase6.classifyCall", () => {
   });
 });
 
+describe("phase6.builtinCoverage", () => {
+  it("treats common get*/is*/find* CFML built-ins as view-safe", () => {
+    const src = `<cfoutput>
+      #getMetaData(prc.user)#
+      #getDirectoryFromPath(getCurrentTemplatePath())#
+      #getTickCount()#
+      #getLocale()#
+      #isDefined("prc.x")#
+      #isInstanceOf(prc.user, "User")#
+      #isJSON(prc.payload)#
+      #isUserInRole("admin")#
+      #findNoCase("x", prc.s)#
+      #findOneOf("abc", prc.s)#
+      #hash(prc.x)#
+    </cfoutput>`;
+    const r = analyzeViewCalls(src, "views/x.cfm");
+    assert.strictEqual(r.counts["handler-logic"], 0,
+      "no built-ins should be flagged as handler-logic");
+    assert.strictEqual(r.counts["service-call"], 0);
+    for (const c of r.classified) {
+      assert.strictEqual(c.category, "view-safe",
+        `${c.call.name} expected view-safe but got ${c.category}`);
+    }
+  });
+});
+
 describe("phase6.viewSafeFunctions config", () => {
   it("extra entries in viewSafeFunctions promote a custom name to view-safe", () => {
     const src = `<cfoutput>#myTeamHelper(prc.user)#</cfoutput>`;

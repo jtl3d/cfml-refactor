@@ -361,8 +361,7 @@ function renderHtml(
   const cats: CallCategory[] = [
     "service-call",
     "handler-logic",
-    "view-possible",
-    "view-safe"
+    "view-possible"
   ];
   const sections = cats
     .map((cat) => {
