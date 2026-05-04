@@ -2,7 +2,7 @@
   "name": "cfml-refactor",
   "displayName": "CFML Refactor",
   "description": "Detect and refactor database queries in CFML files.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "cfml-refactor",
   "engines": {
     "vscode": "^1.85.0"
@@ -76,7 +76,12 @@
         },
         "cfml-refactor.indexExclude": {
           "type": "array",
-          "default": ["node_modules", "dist", "build", ".git"],
+          "default": [
+            "node_modules",
+            "dist",
+            "build",
+            ".git"
+          ],
           "description": "Glob patterns to exclude from indexing"
         },
         "cfml-refactor.viewSafeFunctions": {
@@ -86,7 +91,9 @@
         },
         "cfml-refactor.viewFolderPatterns": {
           "type": "array",
-          "default": ["**/views/**/*.cfm"],
+          "default": [
+            "**/views/**/*.cfm"
+          ],
           "description": "Glob patterns identifying view files for workspace scans"
         },
         "cfml-refactor.handlerLogicPrefixes": {
