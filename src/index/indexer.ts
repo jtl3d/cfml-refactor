@@ -1,9 +1,11 @@
 import * as fs from "fs/promises";
 import * as fssync from "fs";
 import * as path from "path";
-import { extractQueriesFromFile } from "./extractFile";
+import { extractQueriesFromFile, inferContextFromPath } from "./extractFile";
+import { extractFunctionsFromFile } from "./extractFunctions";
 import {
   INDEX_VERSION,
+  type IndexedFunction,
   type IndexedQuery,
   type IndexFile,
   type NormalizationOptions
@@ -43,6 +45,7 @@ export async function scanWorkspace(
   const files = await collectFiles(workspaceRoot, exclude);
   const concurrency = opts.concurrency ?? 10;
   const queries: IndexedQuery[] = [];
+  const functions: IndexedFunction[] = [];
 
   let scanned = 0;
   const total = files.length;
@@ -64,6 +67,13 @@ export async function scanWorkspace(
               normalization: opts.normalization
             });
             for (const q of found) queries.push(q);
+            if (rel.toLowerCase().endsWith(".cfc")) {
+              const fns = extractFunctionsFromFile(source, {
+                filePath: rel,
+                context: inferContextFromPath(rel)
+              });
+              for (const f of fns) functions.push(f);
+            }
           } catch {
             // unreadable file — skip silently
           }
@@ -81,7 +91,8 @@ export async function scanWorkspace(
     indexedAt: new Date().toISOString(),
     workspaceRoot,
     queries,
-    fingerprintMap
+    fingerprintMap,
+    functions
   };
   return { index, durationMs: Date.now() - t0, fileCount: total };
 }
@@ -122,6 +133,7 @@ export async function loadIndex(
     if (!parsed.fingerprintMap) {
       parsed.fingerprintMap = buildFingerprintMap(parsed.queries);
     }
+    if (!parsed.functions) parsed.functions = [];
     return parsed;
   } catch {
     return undefined;
@@ -142,11 +154,23 @@ export function updateIndexForFile(
     normalization
   });
   const queries = [...filtered, ...fresh];
+  let functions = index.functions;
+  if (rel.toLowerCase().endsWith(".cfc")) {
+    const filteredFns = (index.functions ?? []).filter(
+      (f) => f.filePath !== rel
+    );
+    const freshFns = extractFunctionsFromFile(source, {
+      filePath: rel,
+      context: inferContextFromPath(rel)
+    });
+    functions = [...filteredFns, ...freshFns];
+  }
   return {
     ...index,
     indexedAt: new Date().toISOString(),
     queries,
-    fingerprintMap: buildFingerprintMap(queries)
+    fingerprintMap: buildFingerprintMap(queries),
+    functions
   };
 }
 
@@ -157,11 +181,13 @@ export function removeFileFromIndex(
 ): IndexFile {
   const rel = toRelative(workspaceRoot, absoluteFilePath);
   const queries = index.queries.filter((q) => q.filePath !== rel);
+  const functions = (index.functions ?? []).filter((f) => f.filePath !== rel);
   return {
     ...index,
     indexedAt: new Date().toISOString(),
     queries,
-    fingerprintMap: buildFingerprintMap(queries)
+    fingerprintMap: buildFingerprintMap(queries),
+    functions
   };
 }
 

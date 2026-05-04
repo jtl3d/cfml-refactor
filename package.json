@@ -36,6 +36,14 @@
       {
         "command": "cfml-refactor.findSimilarQueries",
         "title": "CFML Refactor: Find Similar Queries"
+      },
+      {
+        "command": "cfml-refactor.findExtractableFunctions",
+        "title": "CFML Refactor: Find Extractable Functions"
+      },
+      {
+        "command": "cfml-refactor.findExtractableFunctionsWorkspace",
+        "title": "CFML Refactor: Find Extractable Functions (Workspace)"
       }
     ],
     "configuration": {
@@ -65,6 +73,51 @@
           "type": "array",
           "default": ["node_modules", "dist", "build", ".git"],
           "description": "Glob patterns to exclude from indexing"
+        },
+        "cfml-refactor.viewSafeFunctions": {
+          "type": "array",
+          "default": [],
+          "description": "Additional function names that are safe in views (extends the built-in list)"
+        },
+        "cfml-refactor.viewFolderPatterns": {
+          "type": "array",
+          "default": ["**/views/**/*.cfm"],
+          "description": "Glob patterns identifying view files for workspace scans"
+        },
+        "cfml-refactor.handlerLogicPrefixes": {
+          "type": "array",
+          "default": [
+            "get",
+            "fetch",
+            "load",
+            "find",
+            "lookup",
+            "calculate",
+            "compute",
+            "validate",
+            "check",
+            "is",
+            "has",
+            "can",
+            "should",
+            "process",
+            "apply",
+            "transform",
+            "convert"
+          ],
+          "description": "Function name prefixes that suggest handler logic"
+        },
+        "cfml-refactor.servicePatterns": {
+          "type": "array",
+          "default": [
+            "Service",
+            "DAO",
+            "Gateway",
+            "Manager",
+            "Repository",
+            "Model"
+          ],
+          "description": "Variable name suffixes that suggest service objects"
         }
       }
     }

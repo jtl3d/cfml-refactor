@@ -31,12 +31,24 @@ export interface IndexedQuery {
   source: IndexedSource;
 }
 
+export interface IndexedFunction {
+  name: string;
+  filePath: string;
+  range: IndexRange;
+  argumentList: string[];
+  context: IndexedContext;
+  isPublic: boolean;
+}
+
 export interface IndexFile {
   version: number;
   indexedAt: string;
   workspaceRoot: string;
   queries: IndexedQuery[];
   fingerprintMap: Record<string, string[]>;
+  // Optional: present for indexes built with function extraction enabled.
+  // Older index files may omit this; consumers should treat as empty.
+  functions?: IndexedFunction[];
 }
 
 export interface NormalizationOptions {
@@ -61,4 +73,5 @@ export interface QueryWithMatches {
   matches: QueryMatch[];
 }
 
-export const INDEX_VERSION = 1;
+// Version 2: adds optional functions[] for Phase 6 cross-reference.
+export const INDEX_VERSION = 2;

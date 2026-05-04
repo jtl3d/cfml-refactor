@@ -1,0 +1,191 @@
+// Built-in CFML functions that are considered view-appropriate. They are
+// formatting, escaping, simple type checks, or read-only collection helpers.
+// Anything not on this list is run through heuristics to decide whether it
+// is likely handler logic or a service call.
+//
+// Names are stored lowercase. Lookups must lowercase the input.
+
+const BUILT_INS: string[] = [
+  // Date / number / string formatting
+  "dateformat",
+  "timeformat",
+  "datetimeformat",
+  "lsdateformat",
+  "lstimeformat",
+  "lsdatetimeformat",
+  "lscurrencyformat",
+  "lsnumberformat",
+  "numberformat",
+  "decimalformat",
+  "dollarformat",
+  "yesnoformat",
+  "booleanformat",
+  // Encoding / escaping
+  "htmleditformat",
+  "htmlcodeformat",
+  "urlencodedformat",
+  "urldecode",
+  "encodeforhtml",
+  "encodeforhtmlattribute",
+  "encodeforurl",
+  "encodeforjavascript",
+  "encodeforcss",
+  "encodeforxml",
+  "encodeforxpath",
+  "javascriptformat",
+  "xmlformat",
+  "paragraphformat",
+  "stripcr",
+  // String helpers used in display
+  "lcase",
+  "ucase",
+  "trim",
+  "ltrim",
+  "rtrim",
+  "len",
+  "mid",
+  "left",
+  "right",
+  "replace",
+  "replacelist",
+  "replaceregex",
+  "rereplace",
+  "rereplacenocase",
+  "find",
+  "findnocase",
+  "rematch",
+  "rematchnocase",
+  "rerefind",
+  "rerefindnocase",
+  "compare",
+  "comparenocase",
+  "reverse",
+  "spanincluding",
+  "spanexcluding",
+  "removechars",
+  "insert",
+  "repeatstring",
+  "tostring",
+  "tonumeric",
+  "val",
+  "asc",
+  "chr",
+  // List helpers
+  "listgetat",
+  "listfirst",
+  "listlast",
+  "listlen",
+  "listfind",
+  "listfindnocase",
+  "listcontains",
+  "listcontainsnocase",
+  "listappend",
+  "listprepend",
+  "listdeleteat",
+  "listsetat",
+  "listsort",
+  "listtoarray",
+  "listrest",
+  "listvaluecount",
+  "listvaluecountnocase",
+  // Array helpers (read-only / pure)
+  "arraylen",
+  "arrayisempty",
+  "arrayisdefined",
+  "arraycontains",
+  "arrayfind",
+  "arrayfindnocase",
+  "arrayfirst",
+  "arraylast",
+  "arrayslice",
+  "arraytolist",
+  "arraymin",
+  "arraymax",
+  "arrayavg",
+  "arraysum",
+  // Struct helpers (read-only / pure)
+  "structkeyexists",
+  "structkeylist",
+  "structkeyarray",
+  "structisempty",
+  "structcount",
+  "structget",
+  "structfind",
+  "structfindkey",
+  "structfindvalue",
+  // Query helpers used in views
+  "queryrecordcount",
+  "querycolumndata",
+  "querygetrow",
+  "querygetcell",
+  "queryisempty",
+  "querycolumnlist",
+  // Type checks / null / defined
+  "isdefined",
+  "isnumeric",
+  "isnumericdate",
+  "isdate",
+  "isboolean",
+  "isarray",
+  "isstruct",
+  "isquery",
+  "isobject",
+  "issimplevalue",
+  "isvalid",
+  "isnull",
+  "isempty",
+  "isbinary",
+  "iif",
+  // Serialization (display side, but technically dual-use; classify as safe
+  // because most view-side use is dumping data the handler set)
+  "serializejson",
+  "deserializejson",
+  // Misc display
+  "now",
+  "createdate",
+  "createdatetime",
+  "createtime",
+  "createodbcdate",
+  "createodbcdatetime",
+  "datediff",
+  "dateadd",
+  "datepart",
+  "year",
+  "month",
+  "day",
+  "hour",
+  "minute",
+  "second",
+  "dayofweek",
+  "dayofweekasstring",
+  "monthasstring",
+  "abs",
+  "ceiling",
+  "floor",
+  "round",
+  "min",
+  "max",
+  "fix",
+  "int",
+  "rand",
+  "randrange",
+  "javacast"
+];
+
+const SET = new Set(BUILT_INS);
+
+export function isBuiltInViewSafe(name: string): boolean {
+  return SET.has(name.toLowerCase());
+}
+
+export function buildSafeSet(extra: string[]): Set<string> {
+  const s = new Set<string>(SET);
+  for (const n of extra) {
+    if (n) s.add(n.toLowerCase());
+  }
+  return s;
+}
+
+export function isViewSafe(name: string, safe: Set<string>): boolean {
+  return safe.has(name.toLowerCase());
+}

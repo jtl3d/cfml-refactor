@@ -4,7 +4,10 @@
       "Bash(npm install *)",
       "Bash(npm run *)",
       "Bash(npm test *)",
-      "Bash(ls c:\\\\\\\\Users\\\\\\\\jtl3d\\\\\\\\git\\\\\\\\cfml-refactor\\\\\\\\test)"
+      "Bash(ls c:\\\\\\\\Users\\\\\\\\jtl3d\\\\\\\\git\\\\\\\\cfml-refactor\\\\\\\\test)",
+      "PowerShell(npm run typecheck 2>&1)",
+      "PowerShell(npm test 2>&1)",
+      "PowerShell(npm run build 2>&1)"
     ]
   }
 }

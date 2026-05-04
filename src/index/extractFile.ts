@@ -145,6 +145,10 @@ function isLikelyScriptOnlyCfc(
 }
 
 function inferContext(filePath: string): IndexedContext {
+  return inferContextFromPath(filePath);
+}
+
+export function inferContextFromPath(filePath: string): IndexedContext {
   const lower = filePath.toLowerCase().replace(/\\/g, "/");
   if (/(^|\/)views?\//.test(lower)) return "view";
   if (/(^|\/)handlers?\//.test(lower)) return "handler";
