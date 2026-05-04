@@ -28,8 +28,46 @@
       {
         "command": "cfml-refactor.hoistQueries",
         "title": "CFML Refactor: Hoist Queries"
+      },
+      {
+        "command": "cfml-refactor.indexWorkspace",
+        "title": "CFML Refactor: Index Workspace"
+      },
+      {
+        "command": "cfml-refactor.findSimilarQueries",
+        "title": "CFML Refactor: Find Similar Queries"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CFML Refactor",
+      "properties": {
+        "cfml-refactor.indexOnActivation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Build query index when extension activates if missing"
+        },
+        "cfml-refactor.normalizeIdentifierCase": {
+          "type": "boolean",
+          "default": false,
+          "description": "Treat identifier case as insignificant during matching"
+        },
+        "cfml-refactor.stripTableAliases": {
+          "type": "boolean",
+          "default": false,
+          "description": "Strip single-letter table aliases during normalization"
+        },
+        "cfml-refactor.suggestSimilarQueries": {
+          "type": "boolean",
+          "default": false,
+          "description": "Surface TABLE-OVERLAP matches in addition to EXACT/STRUCTURAL"
+        },
+        "cfml-refactor.indexExclude": {
+          "type": "array",
+          "default": ["node_modules", "dist", "build", ".git"],
+          "description": "Glob patterns to exclude from indexing"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
