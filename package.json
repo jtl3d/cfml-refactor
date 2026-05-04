@@ -24,6 +24,10 @@
       {
         "command": "cfml-refactor.convertQueriesInPlace",
         "title": "CFML Refactor: Convert Queries In Place"
+      },
+      {
+        "command": "cfml-refactor.hoistQueries",
+        "title": "CFML Refactor: Hoist Queries"
       }
     ]
   },
