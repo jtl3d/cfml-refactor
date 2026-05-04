@@ -154,7 +154,8 @@ function buildQueryInfo(
     hasConditionalSQL,
     qparams,
     context,
-    datasource
+    datasource,
+    rawAttributes: node.attributes
   };
 }
 
@@ -193,13 +194,15 @@ function collectQueryParams(node: TagNode): QueryParamInfo[] {
   const out: QueryParamInfo[] = [];
   walk(node.children, (n) => {
     if (n.type === "tag" && n.name === "cfqueryparam") {
-      const valueAttr = (n as TagNode).attributes.get("value");
+      const tag = n as TagNode;
+      const valueAttr = tag.attributes.get("value");
       out.push({
         range: n.range,
-        name: getAttr(n as TagNode, "name"),
-        cfsqltype: getAttr(n as TagNode, "cfsqltype"),
+        name: getAttr(tag, "name"),
+        cfsqltype: getAttr(tag, "cfsqltype"),
         value: valueAttr?.value,
-        hasInterpolation: valueAttr?.hasInterpolation ?? false
+        hasInterpolation: valueAttr?.hasInterpolation ?? false,
+        rawAttributes: tag.attributes
       });
     }
     return true;

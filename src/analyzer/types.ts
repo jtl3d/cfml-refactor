@@ -1,4 +1,4 @@
-import type { Range } from "../parser/ast";
+import type { AttributeValue, Range } from "../parser/ast";
 
 export type LoopType =
   | "query"
@@ -25,6 +25,7 @@ export interface QueryParamInfo {
   cfsqltype?: string;
   value?: string;
   hasInterpolation: boolean;
+  rawAttributes: Map<string, AttributeValue>;
 }
 
 export interface QueryInfo {
@@ -36,6 +37,7 @@ export interface QueryInfo {
   qparams: QueryParamInfo[];
   context: QueryContext;
   datasource?: string;
+  rawAttributes: Map<string, AttributeValue>;
 }
 
 export interface SkippedQuery {

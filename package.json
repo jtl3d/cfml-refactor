@@ -20,6 +20,10 @@
       {
         "command": "cfml-refactor.detectQueries",
         "title": "CFML Refactor: Detect Queries"
+      },
+      {
+        "command": "cfml-refactor.convertQueriesInPlace",
+        "title": "CFML Refactor: Convert Queries In Place"
       }
     ]
   },
