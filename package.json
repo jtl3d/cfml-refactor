@@ -1,0 +1,43 @@
+{
+  "name": "cfml-refactor",
+  "displayName": "CFML Refactor",
+  "description": "Detect and (eventually) refactor database queries in CFML files.",
+  "version": "0.1.0",
+  "publisher": "cfml-refactor",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:cfml",
+    "onLanguage:html"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cfml-refactor.detectQueries",
+        "title": "CFML Refactor: Detect Queries"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "compile-tests": "tsc -p ./tsconfig.test.json",
+    "pretest": "npm run compile-tests",
+    "test": "mocha \"out-test/test/**/*.test.js\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "mocha": "^10.3.0",
+    "typescript": "^5.4.0"
+  }
+}
