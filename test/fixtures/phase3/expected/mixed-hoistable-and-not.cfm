@@ -35,14 +35,8 @@
     </cfif>
 
     <cfloop query="prc.depts">
+        <cfset userOrders = prc.viewModel[prc.depts.currentRow].userOrders>
         <h2>#name#</h2>
-        <cfscript>
-            prc.userOrders = queryExecute(
-                "SELECT id FROM orders WHERE dept_id = :id",
-                { id: { value: prc.depts.id, cfsqltype: "cf_sql_integer" } },
-                {}
-            );
-        </cfscript>
     </cfloop>
 
     <cftry>

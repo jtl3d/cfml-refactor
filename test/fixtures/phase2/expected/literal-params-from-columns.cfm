@@ -3,11 +3,10 @@
         "
             SELECT id, name FROM users
             WHERE active = :active
-              AND status = :status
+              AND status = 'approved'
         ",
         {
-            active: { value: 1, cfsqltype: "cf_sql_bit" },
-            status: { value: "approved", cfsqltype: "cf_sql_varchar" }
+            active: { value: 1, cfsqltype: "cf_sql_bit" }
         },
         { datasource: "appdb" }
     );

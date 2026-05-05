@@ -16,7 +16,9 @@ const FIXTURES = [
   "existing-top-script",
   "idempotency",
   "mixed-hoistable-and-not",
-  "loop-with-conditional-and-multiple"
+  "loop-with-conditional-and-multiple",
+  "build-pattern-conditional-sql",
+  "build-pattern-in-body"
 ] as const;
 
 const TODAY = "2026-05-04";

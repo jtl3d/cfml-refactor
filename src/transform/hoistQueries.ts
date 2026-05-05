@@ -75,6 +75,8 @@ export interface ClassifiedCall {
   statementRange: Range;
   identifierPaths: string[];
   scriptNode: ScriptNode;
+  scriptLocalVars: Set<string>;
+  requiresWholeScript: boolean;
   ancestorChain: TagNode[];
   ancestorCfif?: TagNode;
   outermostLoop?: TagNode;
@@ -264,12 +266,15 @@ function scanDocument(doc: CFMLDocument, _source: string): ClassifiedCall[] {
               .slice(chain.indexOf(outermostLoop) + 1)
               .filter((t) => t.name === "cfif")
           : [];
+        const localVars = findScriptLocalVars(node.body);
         for (const raw of scriptCalls) {
           out.push({
             prcVar: raw.prcVar,
             statementRange: raw.statementRange,
             identifierPaths: raw.identifierPaths,
             scriptNode: node,
+            scriptLocalVars: localVars,
+            requiresWholeScript: false,
             ancestorChain: [...chain],
             ancestorCfif: chain.find((t) => t.name === "cfif"),
             outermostLoop,
@@ -468,16 +473,32 @@ function classify(
     if (t.name === "cfif") cfifCount++;
   }
   if (!candidates.has(c.prcVar)) {
-    const dep = findUnsafeReference(
+    const probe = findUnsafeReference(
       c.identifierPaths,
       candidates,
-      !!c.outermostLoop
+      !!c.outermostLoop,
+      c.scriptLocalVars
     );
     c.eligibility = "not-hoistable";
-    c.reason = dep ?? "depends on a non-hoistable variable";
+    c.reason = probe.reason ?? "depends on a non-hoistable variable";
     return;
   }
+  const safetyProbe = findUnsafeReference(
+    c.identifierPaths,
+    candidates,
+    !!c.outermostLoop,
+    c.scriptLocalVars
+  );
+  if (safetyProbe.usedLocalVar) {
+    c.requiresWholeScript = true;
+  }
   if (c.outermostLoop) {
+    if (c.requiresWholeScript) {
+      c.eligibility = "not-hoistable";
+      c.reason =
+        "build-pattern (sql/params variables) inside <cfloop> not yet supported";
+      return;
+    }
     for (const cfif of c.cfifPathInLoop) {
       const branchCond = findBranchConditionForCall(cfif, c, source);
       if (branchCond === undefined) {
@@ -503,10 +524,10 @@ function classify(
       return;
     }
     const condPaths = extractIdentifierPaths(branchCond);
-    const dep = findUnsafeReference(condPaths, candidates, false);
-    if (dep) {
+    const probe = findUnsafeReference(condPaths, candidates, false);
+    if (probe.reason) {
       c.eligibility = "not-hoistable";
-      c.reason = `<cfif> condition ${dep}`;
+      c.reason = `<cfif> condition ${probe.reason}`;
       return;
     }
     c.eligibility = "conditionally-hoistable";
@@ -519,22 +540,116 @@ function classify(
 function findUnsafeReference(
   paths: string[],
   candidates: Set<string>,
-  relaxedForLoop: boolean
-): string | undefined {
+  relaxedForLoop: boolean,
+  scriptLocalVars?: Set<string>
+): { reason?: string; usedLocalVar: boolean } {
+  let usedLocalVar = false;
   for (const p of paths) {
     const segs = p.split(".");
-    const root = segs[0].toLowerCase();
-    if (SAFE_SCOPES.has(root)) continue;
-    if (root === "prc") {
-      if (segs.length < 2) return `references bare "prc"`;
+    const root = segs[0];
+    const rootLower = root.toLowerCase();
+    if (SAFE_SCOPES.has(rootLower)) continue;
+    if (rootLower === "prc") {
+      if (segs.length < 2) return { reason: `references bare "prc"`, usedLocalVar };
       if (candidates.has(segs[1])) continue;
       if (relaxedForLoop) continue;
-      return `depends on prc.${segs[1]} (not hoistable)`;
+      return {
+        reason: `depends on prc.${segs[1]} (not hoistable)`,
+        usedLocalVar
+      };
+    }
+    if (scriptLocalVars && scriptLocalVars.has(root)) {
+      usedLocalVar = true;
+      continue;
     }
     if (relaxedForLoop) continue;
-    return `references unscoped variable "${p}"`;
+    return { reason: `references unscoped variable "${p}"`, usedLocalVar };
   }
-  return undefined;
+  return { usedLocalVar };
+}
+
+const ASSIGNMENT_RE =
+  /(?:^|[;\n{}])\s*(?:var\s+)?([A-Za-z_]\w*)(?=\s*(?:\.\w+\s*)*(?:\[[^\]]*\]\s*)*=(?!=))/g;
+
+const ASSIGNMENT_SCOPE_BLACKLIST = new Set([
+  "prc",
+  "rc",
+  "url",
+  "form",
+  "session",
+  "application",
+  "cgi",
+  "server",
+  "cookie",
+  "request",
+  "arguments",
+  "this",
+  "super"
+]);
+
+function findScriptLocalVars(body: string): Set<string> {
+  const sanitized = stripCfScriptStringsAndComments(body);
+  const out = new Set<string>();
+  ASSIGNMENT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ASSIGNMENT_RE.exec(sanitized)) !== null) {
+    const name = m[1];
+    if (ASSIGNMENT_SCOPE_BLACKLIST.has(name.toLowerCase())) continue;
+    out.add(name);
+  }
+  return out;
+}
+
+function stripCfScriptStringsAndComments(body: string): string {
+  let out = "";
+  let i = 0;
+  const len = body.length;
+  while (i < len) {
+    const ch = body[i];
+    if (ch === "/" && body[i + 1] === "/") {
+      while (i < len && body[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue;
+    }
+    if (ch === "/" && body[i + 1] === "*") {
+      out += "  ";
+      i += 2;
+      while (i < len && !(body[i] === "*" && body[i + 1] === "/")) {
+        out += body[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      if (i < len) {
+        out += "  ";
+        i += 2;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      out += " ";
+      i++;
+      while (i < len) {
+        if (body[i] === quote) {
+          if (body[i + 1] === quote) {
+            out += "  ";
+            i += 2;
+            continue;
+          }
+          out += " ";
+          i++;
+          break;
+        }
+        out += body[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 function resolveDependencies(
@@ -546,7 +661,13 @@ function resolveDependencies(
     changed = false;
     for (const c of calls) {
       if (!candidates.has(c.prcVar)) continue;
-      if (findUnsafeReference(c.identifierPaths, candidates, !!c.outermostLoop)) {
+      const probe = findUnsafeReference(
+        c.identifierPaths,
+        candidates,
+        !!c.outermostLoop,
+        c.scriptLocalVars
+      );
+      if (probe.reason) {
         candidates.delete(c.prcVar);
         changed = true;
       }
@@ -682,6 +803,16 @@ function planInsertion(doc: CFMLDocument, source: string): InsertionPlan {
       break;
     }
     if (node.type === "script") {
+      const hasMarker = node.body.includes(HOIST_MARKER);
+      if (!hasMarker && scriptContainsQueryExecute(node)) {
+        return {
+          kind: "insert",
+          insertOffset: lastSkippedEnd,
+          targetBody: "",
+          targetBodyEnd: lastSkippedEnd,
+          scriptOpenIndent: ""
+        };
+      }
       const indent = leadingIndent(source, node.range.start);
       return {
         kind: "merge",
@@ -700,6 +831,10 @@ function planInsertion(doc: CFMLDocument, source: string): InsertionPlan {
     targetBodyEnd: lastSkippedEnd,
     scriptOpenIndent: ""
   };
+}
+
+function scriptContainsQueryExecute(script: ScriptNode): boolean {
+  return scanScriptForQueries(script).length > 0;
 }
 
 function leadingIndent(source: string, pos: number): string {
@@ -814,12 +949,14 @@ function applyHoist(
 
   const removals = computeRemovals(toHoist, source);
   const markerEdits = computeMarkerInsertions(toHoist, source);
+  const loopBodyEdits = computeLoopBodyEdits(toLoopHoist, source, tabUnit);
 
   const insertionEdit = buildInsertionEdit(plan, blockBody, source);
 
   const allEdits: Array<{ range: Range; replacement: string }> = [
     ...removals.map((r) => ({ range: r.range, replacement: "" })),
     ...markerEdits,
+    ...loopBodyEdits,
     insertionEdit
   ];
 
@@ -830,6 +967,138 @@ function applyHoist(
     out = out.slice(0, edit.range.start) + edit.replacement + out.slice(edit.range.end);
   }
   return collapseBlankRuns(out);
+}
+
+interface LoopIndexInfo {
+  expr: string;
+  needsCounter: boolean;
+  counterName?: string;
+}
+
+function getLoopIndexExpression(loop: TagNode): LoopIndexInfo {
+  const queryAttr = loop.attributes.get("query");
+  if (queryAttr && queryAttr.value) {
+    return { expr: `${queryAttr.value}.currentRow`, needsCounter: false };
+  }
+  const fromAttr = loop.attributes.get("from");
+  const toAttr = loop.attributes.get("to");
+  const indexAttr = loop.attributes.get("index");
+  if (fromAttr && toAttr && indexAttr && indexAttr.value) {
+    return { expr: indexAttr.value, needsCounter: false };
+  }
+  if (loop.attributes.get("array") && indexAttr && indexAttr.value) {
+    return { expr: indexAttr.value, needsCounter: false };
+  }
+  return { expr: "vmIdx", needsCounter: true, counterName: "vmIdx" };
+}
+
+function computeLoopBodyEdits(
+  loopHoisted: ClassifiedCall[],
+  source: string,
+  tabUnit: string
+): Array<{ range: Range; replacement: string }> {
+  const groups = groupByOutermostLoop(loopHoisted);
+  const edits: Array<{ range: Range; replacement: string }> = [];
+
+  for (const group of groups) {
+    const loop = group.outermostLoop;
+    const bodyStart = loop.openTagRange.end;
+    const bodyEnd = loop.closeTagRange ? loop.closeTagRange.start : loop.range.end;
+    const idxInfo = getLoopIndexExpression(loop);
+    const bodyIndent = loopBodyIndent(source, loop, tabUnit);
+
+    const insertedAlready = source
+      .slice(bodyStart, bodyEnd)
+      .includes("prc.viewModel[");
+    if (insertedAlready) continue;
+
+    const lines: string[] = [];
+    if (idxInfo.needsCounter) {
+      lines.push(`<cfset ${idxInfo.counterName}++>`);
+    }
+    for (const c of group.calls) {
+      lines.push(
+        `<cfset ${c.prcVar} = prc.viewModel[${idxInfo.expr}].${c.prcVar}>`
+      );
+    }
+    const insertText =
+      "\n" +
+      lines.map((l) => bodyIndent + l).join("\n");
+    edits.push({
+      range: { start: bodyStart, end: bodyStart },
+      replacement: insertText
+    });
+
+    if (idxInfo.needsCounter && idxInfo.counterName) {
+      const lineStart = lineStartOf(source, loop.range.start);
+      const indent = source.slice(lineStart, loop.range.start);
+      edits.push({
+        range: { start: lineStart, end: lineStart },
+        replacement: `${indent}<cfset ${idxInfo.counterName} = 0>\n`
+      });
+    }
+
+    const removalRanges: Range[] = [];
+    const scriptsToRemove = new Set<ScriptNode>();
+    for (const c of group.calls) {
+      if (!scriptsToRemove.has(c.scriptNode)) {
+        scriptsToRemove.add(c.scriptNode);
+      }
+    }
+    for (const script of scriptsToRemove) {
+      const calls = group.calls.filter((c) => c.scriptNode === script);
+      if (canRemoveWholeScript(script, calls)) {
+        const r = expandWholeScriptRange(script, source);
+        edits.push({ range: r, replacement: "" });
+        removalRanges.push(r);
+      } else {
+        for (const c of calls) {
+          const r = expandStatementRange(c.statementRange, source);
+          edits.push({ range: r, replacement: "" });
+          removalRanges.push(r);
+        }
+      }
+    }
+
+    for (const c of group.calls) {
+      const pat = new RegExp(`\\bprc\\.${escapeRegex(c.prcVar)}\\b`, "g");
+      const slice = source.slice(bodyStart, bodyEnd);
+      let m: RegExpExecArray | null;
+      while ((m = pat.exec(slice)) !== null) {
+        const absStart = bodyStart + m.index;
+        const absEnd = absStart + m[0].length;
+        if (rangeOverlapsAny({ start: absStart, end: absEnd }, removalRanges))
+          continue;
+        edits.push({
+          range: { start: absStart, end: absEnd },
+          replacement: c.prcVar
+        });
+      }
+    }
+  }
+
+  return edits;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function rangeOverlapsAny(r: Range, others: Range[]): boolean {
+  for (const o of others) {
+    if (r.start < o.end && o.start < r.end) return true;
+  }
+  return false;
+}
+
+function loopBodyIndent(
+  source: string,
+  loop: TagNode,
+  tabUnit: string
+): string {
+  const lineStart = lineStartOf(source, loop.range.start);
+  const loopIndent = source.slice(lineStart, loop.range.start);
+  return loopIndent + tabUnit;
 }
 
 function buildInsertionEdit(
@@ -912,7 +1181,8 @@ function computeRemovals(
   }
   const out: RemovalEdit[] = [];
   for (const [script, calls] of byScript) {
-    if (canRemoveWholeScript(script, calls)) {
+    const forceWhole = calls.some((c) => c.requiresWholeScript);
+    if (forceWhole || canRemoveWholeScript(script, calls)) {
       out.push({ range: expandWholeScriptRange(script, source) });
     } else {
       for (const c of calls) {
@@ -998,23 +1268,20 @@ function renderBlockBody(
   }
 
   const groups = groupConditional(hoisted);
+  const emittedScripts = new Set<ScriptNode>();
   let firstGroup = true;
   for (const group of groups) {
+    const groupLines = renderHoistGroup(
+      group,
+      source,
+      baseIndent,
+      tabUnit,
+      emittedScripts
+    );
+    if (groupLines.length === 0) continue;
     if (!firstGroup) lines.push("");
     firstGroup = false;
-    if (group.kind === "plain") {
-      for (const c of group.calls) {
-        const stmt = renderStatement(c, source, baseIndent);
-        for (const l of stmt.split("\n")) lines.push(l);
-      }
-    } else {
-      lines.push(`${baseIndent}if (${group.condition}) {`);
-      for (const c of group.calls) {
-        const stmt = renderStatement(c, source, baseIndent + tabUnit);
-        for (const l of stmt.split("\n")) lines.push(l);
-      }
-      lines.push(`${baseIndent}}`);
-    }
+    for (const l of groupLines) lines.push(l);
   }
 
   if (loopHoisted.length > 0) {
@@ -1220,6 +1487,37 @@ function groupConditional(calls: ClassifiedCall[]): HoistGroup[] {
   return out;
 }
 
+function renderHoistGroup(
+  group: HoistGroup,
+  source: string,
+  baseIndent: string,
+  tabUnit: string,
+  emittedScripts: Set<ScriptNode>
+): string[] {
+  const out: string[] = [];
+  const inner = group.kind === "plain" ? baseIndent : baseIndent + tabUnit;
+  const bodyLines: string[] = [];
+  for (const c of group.calls) {
+    if (c.requiresWholeScript) {
+      if (emittedScripts.has(c.scriptNode)) continue;
+      emittedScripts.add(c.scriptNode);
+      const block = renderWholeScriptBody(c.scriptNode, source, inner);
+      for (const l of block.split("\n")) bodyLines.push(l);
+    } else {
+      const stmt = renderStatement(c, source, inner);
+      for (const l of stmt.split("\n")) bodyLines.push(l);
+    }
+  }
+  if (bodyLines.length === 0) return out;
+  if (group.kind === "plain") {
+    return bodyLines;
+  }
+  out.push(`${baseIndent}if (${group.condition}) {`);
+  for (const l of bodyLines) out.push(l);
+  out.push(`${baseIndent}}`);
+  return out;
+}
+
 function renderStatement(
   c: ClassifiedCall,
   source: string,
@@ -1228,6 +1526,33 @@ function renderStatement(
   const text = source.slice(c.statementRange.start, c.statementRange.end);
   const originalLeading = leadingIndentBeforePos(source, c.statementRange.start);
   return reindent(text, newIndent, originalLeading);
+}
+
+function renderWholeScriptBody(
+  script: ScriptNode,
+  source: string,
+  newIndent: string
+): string {
+  const body = source.slice(script.bodyRange.start, script.bodyRange.end);
+  let lines = body.split("\n");
+  while (lines.length > 0 && lines[0].trim().length === 0) lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) {
+    lines.pop();
+  }
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    const m = line.match(/^[ \t]*/);
+    const w = m ? m[0].length : 0;
+    if (w < minIndent) minIndent = w;
+  }
+  if (!isFinite(minIndent)) minIndent = 0;
+  return lines
+    .map((line) => {
+      if (line.trim().length === 0) return "";
+      return newIndent + line.slice(minIndent);
+    })
+    .join("\n");
 }
 
 function leadingIndentBeforePos(source: string, pos: number): number {
@@ -1283,20 +1608,36 @@ function runSafetyChecks(
   classified: ClassifiedCall[]
 ): SafetyResult {
   const warnings: string[] = [];
-  const originalNames = classified.map((c) => c.prcVar);
-  const outputCounts = countAssignments(output);
-  for (const name of originalNames) {
-    const cnt = outputCounts.get(name) ?? 0;
+  const prcCounts = countAssignments(output);
+  const vmCounts = countLoopAssignments(output);
+  for (const c of classified) {
+    if (c.eligibility === "loop-hoistable") {
+      const vmCnt = vmCounts.get(c.prcVar) ?? 0;
+      if (vmCnt === 0) {
+        return {
+          warnings,
+          error: `Safety check failed: vmRow.${c.prcVar} missing from hoisted output.`
+        };
+      }
+      if (vmCnt > 1) {
+        return {
+          warnings,
+          error: `Safety check failed: vmRow.${c.prcVar} appears ${vmCnt} times.`
+        };
+      }
+      continue;
+    }
+    const cnt = prcCounts.get(c.prcVar) ?? 0;
     if (cnt === 0) {
       return {
         warnings,
-        error: `Safety check failed: prc.${name} missing from output.`
+        error: `Safety check failed: prc.${c.prcVar} missing from output.`
       };
     }
     if (cnt > 1) {
       return {
         warnings,
-        error: `Safety check failed: prc.${name} appears ${cnt} times in output.`
+        error: `Safety check failed: prc.${c.prcVar} appears ${cnt} times in output.`
       };
     }
   }
@@ -1373,6 +1714,16 @@ function countTagsInDoc(doc: CFMLDocument): TagCounts {
 function countAssignments(text: string): Map<string, number> {
   const out = new Map<string, number>();
   const re = /\bprc\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*queryExecute\s*\(/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    out.set(m[1], (out.get(m[1]) ?? 0) + 1);
+  }
+  return out;
+}
+
+function countLoopAssignments(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const re = /\bvmRow\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*queryExecute\s*\(/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     out.set(m[1], (out.get(m[1]) ?? 0) + 1);

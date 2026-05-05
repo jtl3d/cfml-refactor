@@ -108,6 +108,66 @@ interface DerivedName {
   fromFallback: boolean;
 }
 
+interface ParamPlan {
+  // For each <cfqueryparam> by its source range.start, the SQL text that
+  // replaces it. Either ":paramName" (a real param) or an inline SQL literal.
+  replacements: Map<number, string>;
+  // The unique struct entries to emit. Multiple cfqueryparam locations can map
+  // to the same entry when their full attribute set is identical.
+  structEntries: Array<{ name: string; param: QueryParamInfo }>;
+  // Whether a given cfqueryparam location was inlined as a literal (no entry
+  // emitted in the params struct).
+  inlinedAt: Set<number>;
+  notes: string[];
+}
+
+function planParams(q: QueryInfo): ParamPlan {
+  const replacements = new Map<number, string>();
+  const inlinedAt = new Set<number>();
+  const structEntries: Array<{ name: string; param: QueryParamInfo }> = [];
+  const dedupKeyToName = new Map<string, string>();
+  const taken = new Set<string>();
+  const notes: string[] = [];
+
+  for (const p of q.qparams) {
+    const literal = inlinableLiteral(p);
+    if (literal !== undefined) {
+      replacements.set(p.range.start, literal);
+      inlinedAt.add(p.range.start);
+      continue;
+    }
+
+    const dedupKey = formatParamObject(p);
+    const existing = dedupKeyToName.get(dedupKey);
+    if (existing !== undefined) {
+      replacements.set(p.range.start, `:${existing}`);
+      continue;
+    }
+
+    const dn = allocateName(p, q, taken);
+    dedupKeyToName.set(dedupKey, dn.name);
+    replacements.set(p.range.start, `:${dn.name}`);
+    structEntries.push({ name: dn.name, param: p });
+
+    if (dn.fromFallback) notes.push(`TODO: rename param "${dn.name}"`);
+    if (!p.cfsqltype) {
+      notes.push(
+        `TODO: cfsqltype missing for "${dn.name}", defaulted to cf_sql_varchar`
+      );
+    }
+  }
+
+  return { replacements, inlinedAt, structEntries, notes };
+}
+
+function inlinableLiteral(p: QueryParamInfo): string | undefined {
+  if (boolAttr(p.rawAttributes, "null")) return undefined;
+  if (boolAttr(p.rawAttributes, "list")) return undefined;
+  if (p.value === undefined) return undefined;
+  if (p.hasInterpolation) return undefined;
+  return `'${p.value.replace(/'/g, "''")}'`;
+}
+
 export function transformQuery(
   q: QueryInfo,
   source: string,
@@ -130,15 +190,13 @@ function transformQueryPlain(
   const tab2 = queryIndent + tabUnit + tabUnit;
   const tab3 = queryIndent + tabUnit + tabUnit + tabUnit;
 
-  const paramNames = generateParamNames(q, new Set());
+  const plan = planParams(q);
 
-  const notes: string[] = collectNotes(q.qparams, paramNames);
-
-  const sqlReplaced = substituteParams(
+  const sqlReplaced = applyParamReplacements(
     q.sqlBody,
     q.sqlBodyRange.start,
     q.qparams,
-    paramNames.map((n) => n.name)
+    plan.replacements
   );
   const sqlLines = formatSqlLines(sqlReplaced, tab3);
 
@@ -146,14 +204,14 @@ function transformQueryPlain(
     q.rawAttributes,
     options.defaultDatasourcePatterns ?? []
   );
-  const hasParams = q.qparams.length > 0;
+  const hasParams = plan.structEntries.length > 0;
   const hasOptions = optionsLine !== undefined;
   const hasMoreAfterSql = hasParams || hasOptions;
 
   const out: string[] = [];
   out.push(`<cfscript>`);
 
-  for (const note of notes) {
+  for (const note of plan.notes) {
     out.push(`${tab1}// ${note}`);
   }
 
@@ -165,9 +223,9 @@ function transformQueryPlain(
 
   if (hasParams) {
     out.push(`${tab2}{`);
-    const paramsLines = buildParamsLines(q.qparams, paramNames, tab3);
-    paramsLines.forEach((line, idx) => {
-      const last = idx === paramsLines.length - 1;
+    plan.structEntries.forEach((entry, idx) => {
+      const last = idx === plan.structEntries.length - 1;
+      const line = `${tab3}${entry.name}: ${formatParamObject(entry.param)}`;
       out.push(line + (last ? "" : ","));
     });
     out.push(`${tab2}}${hasOptions ? "," : ""}`);
@@ -185,7 +243,7 @@ function transformQueryPlain(
   return {
     range: q.range,
     replacement: out.join("\n"),
-    notes,
+    notes: plan.notes,
     style: "phase2"
   };
 }
@@ -364,8 +422,7 @@ function renderStyleA(
   const tab1 = queryIndent + tabUnit;
   const tab2 = queryIndent + tabUnit + tabUnit;
 
-  const paramNames = generateParamNames(q, new Set());
-  const notes = collectNotes(q.qparams, paramNames);
+  const plan = planParams(q);
 
   let cfifIdx = 0;
   const expressionParts: string[] = [];
@@ -387,8 +444,7 @@ function renderStyleA(
     if (seg.kind === "text") {
       pendingText += source.slice(seg.range.start, seg.range.end);
     } else if (seg.kind === "param") {
-      const idx = q.qparams.findIndex((p) => p.range.start === seg.range.start);
-      pendingText += `:${paramNames[idx].name}`;
+      pendingText += plan.replacements.get(seg.range.start) ?? "";
     } else if (seg.kind === "cfif") {
       flushPending(true);
       const branches = branchSets[cfifIdx++];
@@ -401,12 +457,12 @@ function renderStyleA(
     q.rawAttributes,
     options.defaultDatasourcePatterns ?? []
   );
-  const hasParams = q.qparams.length > 0;
+  const hasParams = plan.structEntries.length > 0;
   const hasOptions = optionsLine !== undefined;
 
   const out: string[] = [];
   out.push(`<cfscript>`);
-  for (const note of notes) out.push(`${tab1}// ${note}`);
+  for (const note of plan.notes) out.push(`${tab1}// ${note}`);
   out.push(`${tab1}${makeResultName(q.name)} = queryExecute(`);
 
   for (let i = 0; i < expressionParts.length; i++) {
@@ -419,7 +475,7 @@ function renderStyleA(
   }
 
   if (hasParams) {
-    const paramsObj = buildParamsInline(q.qparams, paramNames);
+    const paramsObj = buildParamsInlineFromPlan(plan.structEntries);
     out.push(`${tab2}${paramsObj}${hasOptions ? "," : ""}`);
   } else if (hasOptions) {
     out.push(`${tab2}{},`);
@@ -437,10 +493,20 @@ function renderStyleA(
   return {
     range: q.range,
     replacement: out.join("\n"),
-    notes,
+    notes: plan.notes,
     style: "ternary",
     styleReason: reason
   };
+}
+
+function buildParamsInlineFromPlan(
+  entries: Array<{ name: string; param: QueryParamInfo }>
+): string {
+  if (entries.length === 0) return "{}";
+  const parts = entries.map(
+    (e) => `${e.name}: ${formatParamObject(e.param)}`
+  );
+  return `{ ${parts.join(", ")} }`;
 }
 
 function buildTernary(branches: CfifBranch[]): string {
@@ -752,35 +818,6 @@ function formatParamObject(p: QueryParamInfo): string {
   return `{ ${parts.join(", ")} }`;
 }
 
-function buildParamsInline(
-  qparams: QueryParamInfo[],
-  paramNames: DerivedName[]
-): string {
-  if (qparams.length === 0) return "{}";
-  const parts: string[] = [];
-  for (let i = 0; i < qparams.length; i++) {
-    parts.push(`${paramNames[i].name}: ${formatParamObject(qparams[i])}`);
-  }
-  return `{ ${parts.join(", ")} }`;
-}
-
-function collectNotes(
-  qparams: QueryParamInfo[],
-  paramNames: DerivedName[]
-): string[] {
-  const notes: string[] = [];
-  for (let i = 0; i < qparams.length; i++) {
-    const info = paramNames[i];
-    if (info.fromFallback) notes.push(`TODO: rename param "${info.name}"`);
-    if (!qparams[i].cfsqltype) {
-      notes.push(
-        `TODO: cfsqltype missing for "${info.name}", defaulted to cf_sql_varchar`
-      );
-    }
-  }
-  return notes;
-}
-
 function normalizeSqlWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
@@ -794,6 +831,7 @@ export function transformDocument(
 
   const transformations: QueryTransformation[] = [];
   const skipped: SkippedItem[] = [];
+  const renames: QueryRename[] = [];
 
   for (const q of result.queries) {
     const skip = shouldSkipTransform(q);
@@ -802,6 +840,12 @@ export function transformDocument(
       continue;
     }
     transformations.push(transformQuery(q, source, options));
+    if (q.name && q.name !== "(unnamed)") {
+      renames.push({
+        originalName: q.name,
+        baseName: stripScopePrefix(q.name)
+      });
+    }
   }
 
   for (const s of result.skipped) {
@@ -823,7 +867,45 @@ export function transformDocument(
       output.slice(t.range.end);
   }
 
+  output = renameQueryReferences(output, renames);
+
   return { output, transformations, skipped };
+}
+
+interface QueryRename {
+  originalName: string;
+  baseName: string;
+}
+
+function renameQueryReferences(
+  source: string,
+  renames: QueryRename[]
+): string {
+  let out = source;
+  for (const r of renames) {
+    if (!r.baseName) continue;
+    if (r.originalName !== r.baseName) {
+      const scopedRe = new RegExp(
+        `(?<![\\w.])${escapeRegex(r.originalName)}\\b`,
+        "g"
+      );
+      out = out.replace(scopedRe, `prc.${r.baseName}`);
+    }
+    const bareRe = new RegExp(
+      `(?<![\\w.])${escapeRegex(r.baseName)}\\b`,
+      "g"
+    );
+    out = out.replace(bareRe, `prc.${r.baseName}`);
+  }
+  return out;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripScopePrefix(name: string): string {
+  return name.replace(SCOPE_PREFIX_RE, "");
 }
 
 function analyzerSkipText(reason: string): string {
@@ -840,8 +922,7 @@ function analyzerSkipText(reason: string): string {
 }
 
 function makeResultName(name: string): string {
-  const stripped = name.replace(SCOPE_PREFIX_RE, "");
-  return "prc." + stripped;
+  return "prc." + stripScopePrefix(name);
 }
 
 function indentOfPosition(source: string, pos: number): string {
@@ -856,21 +937,20 @@ function indentOfPosition(source: string, pos: number): string {
   return source.slice(lineStart, i);
 }
 
-function substituteParams(
+function applyParamReplacements(
   body: string,
   bodyStart: number,
   qparams: QueryParamInfo[],
-  paramNames: string[]
+  replacements: Map<number, string>
 ): string {
-  const indexed = qparams.map((p, idx) => ({ p, idx }));
-  indexed.sort((a, b) => a.p.range.start - b.p.range.start);
+  const sorted = [...qparams].sort((a, b) => a.range.start - b.range.start);
   let result = "";
   let cursor = 0;
-  for (const { p, idx } of indexed) {
+  for (const p of sorted) {
     const start = p.range.start - bodyStart;
     const end = p.range.end - bodyStart;
     result += body.slice(cursor, start);
-    result += `:${paramNames[idx]}`;
+    result += replacements.get(p.range.start) ?? "";
     cursor = end;
   }
   result += body.slice(cursor);
@@ -900,14 +980,6 @@ function formatSqlLines(rawSql: string, indent: string): string[] {
   });
 }
 
-function generateParamNames(q: QueryInfo, taken: Set<string>): DerivedName[] {
-  const result: DerivedName[] = [];
-  for (const p of q.qparams) {
-    result.push(allocateName(p, q, taken));
-  }
-  return result;
-}
-
 function deriveParamName(p: QueryParamInfo, q: QueryInfo): string | undefined {
   if (p.value) {
     const m = p.value.match(SIMPLE_VAR_RE);
@@ -926,19 +998,6 @@ function deriveParamName(p: QueryParamInfo, q: QueryInfo): string | undefined {
     }
   }
   return undefined;
-}
-
-function buildParamsLines(
-  qparams: QueryParamInfo[],
-  paramNames: DerivedName[],
-  tab3: string
-): string[] {
-  const lines: string[] = [];
-  for (let i = 0; i < qparams.length; i++) {
-    const name = paramNames[i].name;
-    lines.push(`${tab3}${name}: ${formatParamObject(qparams[i])}`);
-  }
-  return lines;
 }
 
 function boolAttr(attrs: Map<string, AttributeValue>, key: string): boolean {

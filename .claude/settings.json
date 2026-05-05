@@ -12,7 +12,13 @@
       "Bash(node \"c:\\\\Users\\\\jtl3d\\\\git\\\\cfml-refactor\\\\scripts\\\\dump-fixtures.js\")",
       "Bash(node /tmp/dbg.js loop-dependency-skip.cfm)",
       "Bash(node /tmp/dbg.js mixed-hoistable-and-not.cfm)",
-      "Bash(node /tmp/dbg2.js)"
+      "Bash(node /tmp/dbg2.js)",
+      "Bash(more +1)",
+      "Bash(node /tmp/dbg3.js)",
+      "Bash(node /tmp/dbg.js in-loop-skip.cfm)",
+      "Bash(node /tmp/dbg.js loop-with-conditional-and-multiple.cfm)",
+      "Bash(node /tmp/dbg.js build-pattern-conditional-sql.cfm)",
+      "Bash(node /tmp/dbg.js build-pattern-in-body.cfm)"
     ]
   }
 }
