@@ -9,7 +9,10 @@
       "PowerShell(npm test 2>&1)",
       "PowerShell(npm run build 2>&1)",
       "Bash(node -e ' *)",
-      "Bash(node \"c:\\\\Users\\\\jtl3d\\\\git\\\\cfml-refactor\\\\scripts\\\\dump-fixtures.js\")"
+      "Bash(node \"c:\\\\Users\\\\jtl3d\\\\git\\\\cfml-refactor\\\\scripts\\\\dump-fixtures.js\")",
+      "Bash(node /tmp/dbg.js loop-dependency-skip.cfm)",
+      "Bash(node /tmp/dbg.js mixed-hoistable-and-not.cfm)",
+      "Bash(node /tmp/dbg2.js)"
     ]
   }
 }

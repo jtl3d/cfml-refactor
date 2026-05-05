@@ -13,7 +13,17 @@
         );
     }
 
-    // SKIPPED: prc.userOrders — inside <cfloop query="prc.depts">
+    prc.viewModel = [];
+    cfloop(query="prc.depts") {
+        var vmRow = {};
+        vmRow.userOrders = queryExecute(
+            "SELECT id FROM orders WHERE dept_id = :id",
+            { id: { value: prc.depts.id, cfsqltype: "cf_sql_integer" } },
+            {}
+        );
+        arrayAppend(prc.viewModel, vmRow);
+    }
+
     // SKIPPED: prc.errorLog — inside <cftry>
 </cfscript>
 

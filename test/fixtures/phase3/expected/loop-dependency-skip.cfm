@@ -5,7 +5,16 @@
 
     prc.depts = queryExecute("SELECT id, name FROM departments", {}, {});
 
-    // SKIPPED: prc.deptUsers — inside <cfloop query="prc.depts">
+    prc.viewModel = [];
+    cfloop(query="prc.depts") {
+        var vmRow = {};
+        vmRow.deptUsers = queryExecute(
+            "SELECT id, name FROM users WHERE dept_id = :deptId",
+            { deptId: { value: prc.depts.id, cfsqltype: "cf_sql_integer" } },
+            {}
+        );
+        arrayAppend(prc.viewModel, vmRow);
+    }
 </cfscript>
 
 <cfoutput>

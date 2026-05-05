@@ -67,6 +67,7 @@ const PARAM_PROPERTY_KEYS = new Set([
 export type Eligibility =
   | "hoistable"
   | "conditionally-hoistable"
+  | "loop-hoistable"
   | "not-hoistable";
 
 export interface ClassifiedCall {
@@ -76,6 +77,8 @@ export interface ClassifiedCall {
   scriptNode: ScriptNode;
   ancestorChain: TagNode[];
   ancestorCfif?: TagNode;
+  outermostLoop?: TagNode;
+  cfifPathInLoop: TagNode[];
   noHoistMarker: boolean;
   eligibility: Eligibility;
   reason?: string;
@@ -86,6 +89,7 @@ export interface HoistResult {
   output: string;
   hoisted: ClassifiedCall[];
   conditionallyHoisted: ClassifiedCall[];
+  loopHoisted: ClassifiedCall[];
   skipped: ClassifiedCall[];
   warnings: string[];
   error?: string;
@@ -104,11 +108,14 @@ export function hoistDocument(
   const tabUnit = opts.tabUnit ?? "    ";
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
 
-  if (/<cfquery\b/i.test(source)) {
+  const doc = parse(source);
+  const inputCounts = countTagsInDoc(doc);
+  if (inputCounts.cfqueryNonQoQ > 0) {
     return {
       output: source,
       hoisted: [],
       conditionallyHoisted: [],
+      loopHoisted: [],
       skipped: [],
       warnings: [],
       error:
@@ -116,7 +123,6 @@ export function hoistDocument(
     };
   }
 
-  const doc = parse(source);
   const calls = scanDocument(doc, source);
 
   const candidates = new Set<string>();
@@ -139,6 +145,9 @@ export function hoistDocument(
   const condHoistable = calls.filter(
     (c) => c.eligibility === "conditionally-hoistable"
   );
+  const loopHoistable = calls.filter(
+    (c) => c.eligibility === "loop-hoistable"
+  );
   const skippedAll = calls.filter((c) => c.eligibility === "not-hoistable");
   const skippedReportable = skippedAll.filter((c) => !c.noHoistMarker);
 
@@ -152,6 +161,7 @@ export function hoistDocument(
       output: source,
       hoisted: [],
       conditionallyHoisted: [],
+      loopHoisted: [],
       skipped: skippedAll,
       warnings: [],
       error: "Dependency cycle detected among hoistable queries — aborting."
@@ -173,12 +183,19 @@ export function hoistDocument(
   const toEmitSkipped = skippedReportable.filter(
     (c) => !existingSkipped.has(c.prcVar)
   );
+  const existingLoopHoisted = plan.kind === "merge"
+    ? extractExistingLoopHoistedNames(plan.targetBody)
+    : new Set<string>();
+  const toEmitLoop = loopHoistable.filter(
+    (c) => !existingLoopHoisted.has(c.prcVar)
+  );
 
-  if (toEmit.length === 0 && toEmitSkipped.length === 0) {
+  if (toEmit.length === 0 && toEmitSkipped.length === 0 && toEmitLoop.length === 0) {
     return {
       output: source,
       hoisted: hoistable,
       conditionallyHoisted: condHoistable,
+      loopHoisted: loopHoistable,
       skipped: skippedAll,
       warnings: [],
       noChange: true
@@ -188,6 +205,7 @@ export function hoistDocument(
   const output = applyHoist(
     source,
     toEmit,
+    toEmitLoop,
     toEmitSkipped,
     plan,
     tabUnit,
@@ -199,6 +217,7 @@ export function hoistDocument(
       output: source,
       hoisted: [],
       conditionallyHoisted: [],
+      loopHoisted: [],
       skipped: skippedAll,
       warnings: safety.warnings,
       error: safety.error
@@ -209,6 +228,7 @@ export function hoistDocument(
     output,
     hoisted: hoistable,
     conditionallyHoisted: condHoistable,
+    loopHoisted: loopHoistable,
     skipped: skippedAll,
     warnings: safety.warnings
   };
@@ -238,6 +258,12 @@ function scanDocument(doc: CFMLDocument, _source: string): ClassifiedCall[] {
       if (node.type === "script") {
         const scriptCalls = scanScriptForQueries(node);
         const noHoist = pendingNoHoist;
+        const outermostLoop = chain.find((t) => t.name === "cfloop");
+        const cfifPathInLoop = outermostLoop
+          ? chain
+              .slice(chain.indexOf(outermostLoop) + 1)
+              .filter((t) => t.name === "cfif")
+          : [];
         for (const raw of scriptCalls) {
           out.push({
             prcVar: raw.prcVar,
@@ -246,6 +272,8 @@ function scanDocument(doc: CFMLDocument, _source: string): ClassifiedCall[] {
             scriptNode: node,
             ancestorChain: [...chain],
             ancestorCfif: chain.find((t) => t.name === "cfif"),
+            outermostLoop,
+            cfifPathInLoop,
             noHoistMarker: noHoist,
             eligibility: "not-hoistable"
           });
@@ -414,13 +442,9 @@ function skipString(body: string, i: number): number {
 
 function isStructurallyHoistable(c: ClassifiedCall): boolean {
   if (c.noHoistMarker) return false;
-  let cfifCount = 0;
   for (const t of c.ancestorChain) {
-    if (t.name === "cfloop") return false;
     if (t.name === "cftry" || t.name === "cfcatch") return false;
-    if (t.name === "cfif") cfifCount++;
   }
-  if (cfifCount > 1) return false;
   return true;
 }
 
@@ -436,11 +460,6 @@ function classify(
   }
   let cfifCount = 0;
   for (const t of c.ancestorChain) {
-    if (t.name === "cfloop") {
-      c.eligibility = "not-hoistable";
-      c.reason = describeLoopAncestor(t);
-      return;
-    }
     if (t.name === "cftry" || t.name === "cfcatch") {
       c.eligibility = "not-hoistable";
       c.reason = `inside <${t.name}>`;
@@ -448,15 +467,31 @@ function classify(
     }
     if (t.name === "cfif") cfifCount++;
   }
+  if (!candidates.has(c.prcVar)) {
+    const dep = findUnsafeReference(
+      c.identifierPaths,
+      candidates,
+      !!c.outermostLoop
+    );
+    c.eligibility = "not-hoistable";
+    c.reason = dep ?? "depends on a non-hoistable variable";
+    return;
+  }
+  if (c.outermostLoop) {
+    for (const cfif of c.cfifPathInLoop) {
+      const branchCond = findBranchConditionForCall(cfif, c, source);
+      if (branchCond === undefined) {
+        c.eligibility = "not-hoistable";
+        c.reason = "could not extract <cfif> condition inside loop";
+        return;
+      }
+    }
+    c.eligibility = "loop-hoistable";
+    return;
+  }
   if (cfifCount > 1) {
     c.eligibility = "not-hoistable";
     c.reason = "nested inside more than one <cfif>";
-    return;
-  }
-  if (!candidates.has(c.prcVar)) {
-    const dep = findUnsafeReference(c.identifierPaths, candidates);
-    c.eligibility = "not-hoistable";
-    c.reason = dep ?? "depends on a non-hoistable variable";
     return;
   }
   if (cfifCount === 1) {
@@ -468,7 +503,7 @@ function classify(
       return;
     }
     const condPaths = extractIdentifierPaths(branchCond);
-    const dep = findUnsafeReference(condPaths, candidates);
+    const dep = findUnsafeReference(condPaths, candidates, false);
     if (dep) {
       c.eligibility = "not-hoistable";
       c.reason = `<cfif> condition ${dep}`;
@@ -481,15 +516,10 @@ function classify(
   c.eligibility = "hoistable";
 }
 
-function describeLoopAncestor(t: TagNode): string {
-  const queryAttr = t.attributes.get("query");
-  if (queryAttr) return `inside <cfloop query="${queryAttr.value}">`;
-  return "inside <cfloop>";
-}
-
 function findUnsafeReference(
   paths: string[],
-  candidates: Set<string>
+  candidates: Set<string>,
+  relaxedForLoop: boolean
 ): string | undefined {
   for (const p of paths) {
     const segs = p.split(".");
@@ -498,8 +528,10 @@ function findUnsafeReference(
     if (root === "prc") {
       if (segs.length < 2) return `references bare "prc"`;
       if (candidates.has(segs[1])) continue;
+      if (relaxedForLoop) continue;
       return `depends on prc.${segs[1]} (not hoistable)`;
     }
+    if (relaxedForLoop) continue;
     return `references unscoped variable "${p}"`;
   }
   return undefined;
@@ -514,7 +546,7 @@ function resolveDependencies(
     changed = false;
     for (const c of calls) {
       if (!candidates.has(c.prcVar)) continue;
-      if (findUnsafeReference(c.identifierPaths, candidates)) {
+      if (findUnsafeReference(c.identifierPaths, candidates, !!c.outermostLoop)) {
         candidates.delete(c.prcVar);
         changed = true;
       }
@@ -696,6 +728,15 @@ function extractExistingSkippedNames(body: string): string[] {
   return out;
 }
 
+function extractExistingLoopHoistedNames(body: string): Set<string> {
+  const out = new Set<string>();
+  if (!body.includes(HOIST_MARKER)) return out;
+  const re = /\bvmRow\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*queryExecute\s*\(/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) out.add(m[1]);
+  return out;
+}
+
 function topoSort(
   calls: ClassifiedCall[],
   candidates: Set<string>
@@ -752,6 +793,7 @@ interface RemovalEdit {
 function applyHoist(
   source: string,
   toHoist: ClassifiedCall[],
+  toLoopHoist: ClassifiedCall[],
   skipped: ClassifiedCall[],
   plan: InsertionPlan,
   tabUnit: string,
@@ -761,6 +803,7 @@ function applyHoist(
 
   const blockBody = renderBlockBody(
     toHoist,
+    toLoopHoist,
     skipped,
     source,
     baseIndent,
@@ -931,6 +974,7 @@ function expandStatementRange(range: Range, source: string): Range {
 
 function renderBlockBody(
   hoisted: ClassifiedCall[],
+  loopHoisted: ClassifiedCall[],
   skipped: ClassifiedCall[],
   source: string,
   baseIndent: string,
@@ -940,13 +984,17 @@ function renderBlockBody(
 ): string {
   const isMerge = plan.kind === "merge";
   const alreadyHasMarker = isMerge && plan.targetBody.includes(HOIST_MARKER);
+  const existingHasViewModel =
+    isMerge && /\bprc\.viewModel\s*=\s*\[\s*\]/.test(plan.targetBody);
   const lines: string[] = [];
 
   if (!alreadyHasMarker) {
     lines.push(`${baseIndent}// ===== View model =====`);
     lines.push(`${baseIndent}// ${HOIST_MARKER} on ${today}`);
     lines.push(`${baseIndent}// TODO: Move these to the handler`);
-    if (hoisted.length > 0 || skipped.length > 0) lines.push("");
+    if (hoisted.length > 0 || loopHoisted.length > 0 || skipped.length > 0) {
+      lines.push("");
+    }
   }
 
   const groups = groupConditional(hoisted);
@@ -969,8 +1017,23 @@ function renderBlockBody(
     }
   }
 
+  if (loopHoisted.length > 0) {
+    if (hoisted.length > 0 || !alreadyHasMarker) lines.push("");
+    if (!existingHasViewModel) {
+      lines.push(`${baseIndent}prc.viewModel = [];`);
+    }
+    const loopGroups = groupByOutermostLoop(loopHoisted);
+    let firstLoopGroup = true;
+    for (const group of loopGroups) {
+      if (!firstLoopGroup || existingHasViewModel) lines.push("");
+      firstLoopGroup = false;
+      const loopLines = renderLoopGroup(group, source, baseIndent, tabUnit);
+      for (const l of loopLines) lines.push(l);
+    }
+  }
+
   if (skipped.length > 0) {
-    if (hoisted.length > 0) lines.push("");
+    if (hoisted.length > 0 || loopHoisted.length > 0) lines.push("");
     for (const c of skipped) {
       const reason = c.reason ?? "not eligible";
       lines.push(`${baseIndent}// SKIPPED: prc.${c.prcVar} — ${reason}`);
@@ -978,6 +1041,142 @@ function renderBlockBody(
   }
 
   return lines.join("\n") + "\n";
+}
+
+interface LoopGroup {
+  outermostLoop: TagNode;
+  calls: ClassifiedCall[];
+}
+
+function groupByOutermostLoop(calls: ClassifiedCall[]): LoopGroup[] {
+  const map = new Map<TagNode, ClassifiedCall[]>();
+  for (const c of calls) {
+    if (!c.outermostLoop) continue;
+    const list = map.get(c.outermostLoop) ?? [];
+    list.push(c);
+    map.set(c.outermostLoop, list);
+  }
+  const out: LoopGroup[] = [];
+  for (const [loop, list] of map) {
+    list.sort((a, b) => a.statementRange.start - b.statementRange.start);
+    out.push({ outermostLoop: loop, calls: list });
+  }
+  out.sort(
+    (a, b) => a.outermostLoop.range.start - b.outermostLoop.range.start
+  );
+  return out;
+}
+
+function renderLoopGroup(
+  group: LoopGroup,
+  source: string,
+  baseIndent: string,
+  tabUnit: string
+): string[] {
+  const lines: string[] = [];
+  const attrs = renderCfloopAttrs(group.outermostLoop);
+  lines.push(`${baseIndent}cfloop(${attrs}) {`);
+  const inner = baseIndent + tabUnit;
+  lines.push(`${inner}var vmRow = {};`);
+
+  const cfifGroups = groupLoopCallsByCfifPath(group.calls, source);
+  for (const cg of cfifGroups) {
+    const callLines = renderLoopCallEmissions(
+      cg,
+      source,
+      inner,
+      tabUnit
+    );
+    for (const l of callLines) lines.push(l);
+  }
+
+  lines.push(`${inner}arrayAppend(prc.viewModel, vmRow);`);
+  lines.push(`${baseIndent}}`);
+  return lines;
+}
+
+interface LoopCfifGroup {
+  conditions: string[];
+  calls: ClassifiedCall[];
+}
+
+function groupLoopCallsByCfifPath(
+  calls: ClassifiedCall[],
+  source: string
+): LoopCfifGroup[] {
+  const groups: LoopCfifGroup[] = [];
+  const sortedCalls = [...calls].sort(
+    (a, b) => a.statementRange.start - b.statementRange.start
+  );
+  for (const c of sortedCalls) {
+    const conds: string[] = [];
+    for (const cfif of c.cfifPathInLoop) {
+      const cond = findBranchConditionForCall(cfif, c, source) ?? "true";
+      conds.push(cond);
+    }
+    const last = groups[groups.length - 1];
+    if (last && arraysEqual(last.conditions, conds)) {
+      last.calls.push(c);
+    } else {
+      groups.push({ conditions: conds, calls: [c] });
+    }
+  }
+  return groups;
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function renderLoopCallEmissions(
+  group: LoopCfifGroup,
+  source: string,
+  indent: string,
+  tabUnit: string
+): string[] {
+  const lines: string[] = [];
+  let curIndent = indent;
+  for (const cond of group.conditions) {
+    lines.push(`${curIndent}if (${cond}) {`);
+    curIndent += tabUnit;
+  }
+  for (const c of group.calls) {
+    const stmt = renderLoopStatement(c, source, curIndent);
+    for (const l of stmt.split("\n")) lines.push(l);
+  }
+  for (let i = 0; i < group.conditions.length; i++) {
+    curIndent = curIndent.slice(0, curIndent.length - tabUnit.length);
+    lines.push(`${curIndent}}`);
+  }
+  return lines;
+}
+
+function renderLoopStatement(
+  c: ClassifiedCall,
+  source: string,
+  newIndent: string
+): string {
+  const text = source.slice(c.statementRange.start, c.statementRange.end);
+  const replaced = text.replace(
+    /^prc\.([A-Za-z_][A-Za-z0-9_]*)/,
+    (_m, name) => `vmRow.${name}`
+  );
+  const originalLeading = leadingIndentBeforePos(source, c.statementRange.start);
+  return reindent(replaced, newIndent, originalLeading);
+}
+
+function renderCfloopAttrs(loop: TagNode): string {
+  const parts: string[] = [];
+  for (const [name, attr] of loop.attributes) {
+    if (attr.raw === "") {
+      parts.push(name);
+    } else {
+      parts.push(`${name}=${attr.raw}`);
+    }
+  }
+  return parts.join(", ");
 }
 
 interface HoistGroup {
@@ -1112,10 +1311,16 @@ function runSafetyChecks(
   }
   const inCounts = countTagsInDoc(parse(source));
   const outCounts = countTagsInDoc(outDoc);
-  if (outCounts.cfquery > 0) {
+  if (outCounts.cfqueryNonQoQ > 0) {
     return {
       warnings,
-      error: "Safety check failed: <cfquery> tags found in output."
+      error: "Safety check failed: non-QoQ <cfquery> tags found in output."
+    };
+  }
+  if (inCounts.cfquery !== outCounts.cfquery) {
+    return {
+      warnings,
+      error: `Safety check failed: <cfquery> count changed (${inCounts.cfquery} -> ${outCounts.cfquery}).`
     };
   }
   for (const tag of ["cfif", "cfelseif", "cfelse"] as const) {
@@ -1131,18 +1336,30 @@ function runSafetyChecks(
 
 interface TagCounts {
   cfquery: number;
+  cfqueryNonQoQ: number;
   cfif: number;
   cfelseif: number;
   cfelse: number;
 }
 
 function countTagsInDoc(doc: CFMLDocument): TagCounts {
-  const out: TagCounts = { cfquery: 0, cfif: 0, cfelseif: 0, cfelse: 0 };
+  const out: TagCounts = {
+    cfquery: 0,
+    cfqueryNonQoQ: 0,
+    cfif: 0,
+    cfelseif: 0,
+    cfelse: 0
+  };
   const visit = (nodes: CFMLNode[]): void => {
     for (const node of nodes) {
       if (node.type === "tag") {
-        if (node.name === "cfquery") out.cfquery++;
-        else if (node.name === "cfif") out.cfif++;
+        if (node.name === "cfquery") {
+          out.cfquery++;
+          const dbtype = node.attributes.get("dbtype");
+          if (!dbtype || dbtype.value.toLowerCase() !== "query") {
+            out.cfqueryNonQoQ++;
+          }
+        } else if (node.name === "cfif") out.cfif++;
         else if (node.name === "cfelseif") out.cfelseif++;
         else if (node.name === "cfelse") out.cfelse++;
         if (node.children.length > 0) visit(node.children);

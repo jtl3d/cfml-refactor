@@ -133,6 +133,12 @@ function writeLog(
             .join(", ")})`
         : "")
   );
+  channel.appendLine(
+    `Loop hoisted (viewModel): ${result.loopHoisted.length} ${plural(result.loopHoisted.length, "query", "queries")}` +
+      (result.loopHoisted.length > 0
+        ? ` (${result.loopHoisted.map((h) => "prc." + h.prcVar).join(", ")})`
+        : "")
+  );
   const reportable = result.skipped.filter((s) => !s.noHoistMarker);
   channel.appendLine(
     `Skipped: ${reportable.length} ${plural(reportable.length, "query", "queries")}`

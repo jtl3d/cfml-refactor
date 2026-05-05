@@ -15,7 +15,8 @@ const FIXTURES = [
   "no-hoist-magic-comment",
   "existing-top-script",
   "idempotency",
-  "mixed-hoistable-and-not"
+  "mixed-hoistable-and-not",
+  "loop-with-conditional-and-multiple"
 ] as const;
 
 const TODAY = "2026-05-04";
@@ -53,7 +54,7 @@ describe("hoist: phase 3 fixtures", () => {
     });
   }
 
-  it("aborts cleanly when <cfquery> tags still exist", () => {
+  it("aborts cleanly when non-QoQ <cfquery> tags still exist", () => {
     const src =
       `<cfquery name="x" datasource="db">SELECT 1</cfquery>\n` +
       `<cfscript>\n  prc.y = queryExecute("SELECT 1", {}, {});\n</cfscript>\n`;
@@ -61,6 +62,26 @@ describe("hoist: phase 3 fixtures", () => {
     assert.ok(result.error, "expected an error");
     assert.match(result.error!, /Phase 2/);
     assert.strictEqual(result.output, src);
+  });
+
+  it("hoists alongside QoQ <cfquery dbtype=\"query\"> without aborting", () => {
+    const src =
+      `<cfscript>\n` +
+      `    prc.users = queryExecute("SELECT id, name, status FROM users", {}, {});\n` +
+      `</cfscript>\n` +
+      `\n` +
+      `<cfquery name="prc.activeUsers" dbtype="query">\n` +
+      `    SELECT * FROM prc.users WHERE status = 'active'\n` +
+      `</cfquery>\n` +
+      `\n` +
+      `<cfoutput>\n` +
+      `    <cfloop query="prc.activeUsers"><li>#name#</li></cfloop>\n` +
+      `</cfoutput>\n`;
+    const result = hoistDocument(src, { today: TODAY });
+    assert.strictEqual(result.error, undefined, `unexpected error: ${result.error}`);
+    assert.ok(result.output.includes("// Hoisted by cfml-refactor"));
+    assert.ok(result.output.includes('dbtype="query"'),
+      "QoQ <cfquery> should be preserved in output");
   });
 
   it("aborts on dependency cycles without modifying the source", () => {
@@ -78,6 +99,13 @@ describe("hoist: phase 3 fixtures", () => {
     assert.strictEqual(twice, once);
   });
 
+  it("is idempotent on a loop-hoisted file (viewModel)", () => {
+    const input = loadFixture("phase3/input/loop-with-conditional-and-multiple.cfm");
+    const once = hoistDocument(input, { today: TODAY }).output;
+    const twice = hoistDocument(once, { today: TODAY }).output;
+    assert.strictEqual(twice, once);
+  });
+
   it("re-hoist of an already-hoisted file is a no-op", () => {
     const input = loadFixture("phase3/input/idempotency.cfm");
     const result = hoistDocument(input, { today: TODAY });
@@ -85,16 +113,21 @@ describe("hoist: phase 3 fixtures", () => {
     assert.ok(result.noChange);
   });
 
-  it("logs hoisted, conditionally-hoisted, and skipped queries", () => {
+  it("logs hoisted, conditionally-hoisted, loop-hoisted, and skipped queries", () => {
     const input = loadFixture("phase3/input/mixed-hoistable-and-not.cfm");
     const result = hoistDocument(input, { today: TODAY });
-    assert.strictEqual(result.hoisted.length, 1);
-    assert.strictEqual(result.conditionallyHoisted.length, 1);
-    const reportable = result.skipped.filter((s) => !s.noHoistMarker);
-    assert.strictEqual(reportable.length, 2);
+    assert.strictEqual(result.hoisted.length, 1, "hoisted: depts");
+    assert.strictEqual(result.conditionallyHoisted.length, 1, "cond: adminFlags");
+    assert.strictEqual(result.loopHoisted.length, 1, "loop: userOrders");
     assert.deepStrictEqual(
-      reportable.map((s) => s.prcVar).sort(),
-      ["errorLog", "userOrders"]
+      result.loopHoisted.map((c) => c.prcVar),
+      ["userOrders"]
+    );
+    const reportable = result.skipped.filter((s) => !s.noHoistMarker);
+    assert.strictEqual(reportable.length, 1);
+    assert.deepStrictEqual(
+      reportable.map((s) => s.prcVar),
+      ["errorLog"]
     );
   });
 
