@@ -5,7 +5,9 @@ import { parse } from "../parser/parse";
 import {
   shouldSkipTransform,
   transformQuery,
-  type SkippedItem
+  type QueryTransformation,
+  type SkippedItem,
+  type TransformOptions
 } from "../transform/convertQuery";
 
 export function registerConvertQueries(
@@ -31,9 +33,18 @@ export function registerConvertQueries(
       const result = analyze(parsed);
 
       const tabUnit = computeTabUnit(editor);
+      const cfg = vscode.workspace.getConfiguration("cfml-refactor");
+      const defaultDatasourcePatterns = cfg.get<string[]>(
+        "defaultDatasourcePatterns",
+        []
+      );
+      const transformOpts: TransformOptions = {
+        tabUnit,
+        defaultDatasourcePatterns
+      };
 
       const edit = new vscode.WorkspaceEdit();
-      let transformed = 0;
+      const transformations: Array<{ q: typeof result.queries[number]; t: QueryTransformation }> = [];
       const skipped: SkippedItem[] = [];
 
       for (const q of result.queries) {
@@ -46,7 +57,7 @@ export function registerConvertQueries(
           });
           continue;
         }
-        const t = transformQuery(q, source, tabUnit);
+        const t = transformQuery(q, source, transformOpts);
         const range = new vscode.Range(
           doc.positionAt(t.range.start),
           doc.positionAt(t.range.end)
@@ -55,7 +66,7 @@ export function registerConvertQueries(
           needsConfirmation: true,
           label: `Convert <cfquery> "${q.name}"`
         });
-        transformed++;
+        transformations.push({ q, t });
       }
 
       for (const s of result.skipped) {
@@ -66,8 +77,9 @@ export function registerConvertQueries(
         });
       }
 
-      writeLog(channel, doc, transformed, skipped);
+      writeLog(channel, doc, transformations, skipped);
       channel.show(true);
+      const transformed = transformations.length;
 
       if (transformed === 0) {
         vscode.window.showInformationMessage(
@@ -112,16 +124,27 @@ function analyzerSkipText(reason: string): string {
 function writeLog(
   channel: vscode.OutputChannel,
   doc: vscode.TextDocument,
-  transformed: number,
+  transformations: Array<{ q: { name: string; range: { start: number } }; t: QueryTransformation }>,
   skipped: SkippedItem[]
 ): void {
   channel.clear();
   const rel = vscode.workspace.asRelativePath(doc.uri, false);
   const display = rel || path.basename(doc.fileName);
-  channel.appendLine(`File: ${display}`);
+  channel.appendLine(`=== ${display} ===`);
+  const transformed = transformations.length;
   channel.appendLine(
     `Converted ${transformed} ${transformed === 1 ? "query" : "queries"} to queryExecute`
   );
+  transformations.forEach(({ q, t }, idx) => {
+    const line = doc.positionAt(q.range.start).line + 1;
+    const styleLabel = describeStyle(t.style);
+    channel.appendLine(
+      `[${idx + 1}] ${q.name} (line ${line}) — converted with ${styleLabel}`
+    );
+    if (t.styleReason) {
+      channel.appendLine(`    Reason: ${t.styleReason}`);
+    }
+  });
   if (skipped.length > 0) {
     channel.appendLine("");
     for (const s of skipped) {
@@ -130,5 +153,17 @@ function writeLog(
         `SKIPPED: ${s.name ?? "(unnamed)"} (line ${line}) — reason: ${s.reason}`
       );
     }
+  }
+}
+
+function describeStyle(style: QueryTransformation["style"]): string {
+  switch (style) {
+    case "ternary":
+      return "Style A (ternary)";
+    case "variable-based":
+      return "Style B (variable-based)";
+    case "phase2":
+    default:
+      return "Phase 2";
   }
 }

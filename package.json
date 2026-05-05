@@ -130,6 +130,11 @@
             "Model"
           ],
           "description": "Variable name suffixes that suggest service objects"
+        },
+        "cfml-refactor.defaultDatasourcePatterns": {
+          "type": "array",
+          "default": [],
+          "description": "Datasource attribute values matching these patterns will be omitted from queryExecute options. Exact-match strings against the literal datasource attribute text. Leave empty to always emit datasource."
         }
       }
     }

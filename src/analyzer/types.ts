@@ -1,4 +1,4 @@
-import type { AttributeValue, Range } from "../parser/ast";
+import type { AttributeValue, CFMLNode, Range } from "../parser/ast";
 
 export type LoopType =
   | "query"
@@ -34,10 +34,15 @@ export interface QueryInfo {
   sqlBody: string;
   sqlBodyRange: Range;
   hasConditionalSQL: boolean;
+  hasNestedConditional: boolean;
+  hasLoopInBody: boolean;
+  hasSetInBody: boolean;
   qparams: QueryParamInfo[];
   context: QueryContext;
   datasource?: string;
+  datasourceAttribute?: AttributeValue;
   rawAttributes: Map<string, AttributeValue>;
+  bodyChildren: CFMLNode[];
 }
 
 export interface SkippedQuery {

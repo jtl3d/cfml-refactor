@@ -11,7 +11,7 @@ const PAIRS: ReadonlyArray<readonly [string, "transform" | "unchanged"]> = [
   ["list-param", "transform"],
   ["null-param", "transform"],
   ["already-scoped-name", "transform"],
-  ["conditional-sql", "unchanged"],
+  ["conditional-sql", "transform"],
   ["qoq", "unchanged"],
   ["skip-magic-comment", "unchanged"],
   ["missing-cfsqltype", "transform"],
@@ -63,11 +63,17 @@ describe("transform: phase 2 fixtures", () => {
     assert.strictEqual(twice, once);
   });
 
-  it("logs skipped queries with a reason", () => {
-    const input = loadFixture("phase2/input/conditional-sql.cfm");
-    const result = transformDocument(input);
+  it("logs skipped queries with a reason (cfloop inside cfquery)", () => {
+    const src =
+      `<cfquery name="x" datasource="db">\n` +
+      `    SELECT * FROM things WHERE id IN (\n` +
+      `    <cfloop list="1,2,3" index="i">#i#,</cfloop>\n` +
+      `    0)\n` +
+      `</cfquery>\n`;
+    const result = transformDocument(src);
+    assert.strictEqual(result.transformations.length, 0);
     assert.strictEqual(result.skipped.length, 1);
-    assert.match(result.skipped[0].reason, /<cfif>/);
+    assert.match(result.skipped[0].reason, /<cfloop>/);
   });
 
   it("skips a cfqueryparam value containing a function call", () => {

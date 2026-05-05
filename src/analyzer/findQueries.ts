@@ -133,9 +133,13 @@ function buildQueryInfo(
 ): QueryInfo {
   const name = getAttr(node, "name") ?? "(unnamed)";
   const datasource = getAttr(node, "datasource");
+  const datasourceAttribute = node.attributes.get("datasource");
   const sqlBodyRange = computeBodyRange(node);
   const sqlBody = source.slice(sqlBodyRange.start, sqlBodyRange.end);
   const hasConditionalSQL = containsTagInBody(node, "cfif");
+  const hasNestedConditional = containsNestedSameTag(node, "cfif");
+  const hasLoopInBody = containsTagInBody(node, "cfloop");
+  const hasSetInBody = containsTagInBody(node, "cfset");
   const qparams = collectQueryParams(node);
   const context: QueryContext = {
     insideLoop: parent.insideLoop,
@@ -152,10 +156,15 @@ function buildQueryInfo(
     sqlBody,
     sqlBodyRange,
     hasConditionalSQL,
+    hasNestedConditional,
+    hasLoopInBody,
+    hasSetInBody,
     qparams,
     context,
     datasource,
-    rawAttributes: node.attributes
+    datasourceAttribute,
+    rawAttributes: node.attributes,
+    bodyChildren: node.children
   };
 }
 
@@ -188,6 +197,27 @@ function containsTagInBody(node: TagNode, tagName: string): boolean {
     return true;
   });
   return found;
+}
+
+function containsNestedSameTag(node: TagNode, tagName: string): boolean {
+  let nested = false;
+  walk(node.children, (n) => {
+    if (nested) return false;
+    if (n.type === "tag" && n.name === tagName) {
+      const inner = n as TagNode;
+      walk(inner.children, (m) => {
+        if (nested) return false;
+        if (m.type === "tag" && m.name === tagName) {
+          nested = true;
+          return false;
+        }
+        return true;
+      });
+      return false;
+    }
+    return true;
+  });
+  return nested;
 }
 
 function collectQueryParams(node: TagNode): QueryParamInfo[] {

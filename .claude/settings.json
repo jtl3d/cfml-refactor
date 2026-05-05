@@ -8,7 +8,8 @@
       "PowerShell(npm run typecheck 2>&1)",
       "PowerShell(npm test 2>&1)",
       "PowerShell(npm run build 2>&1)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(node \"c:\\\\Users\\\\jtl3d\\\\git\\\\cfml-refactor\\\\scripts\\\\dump-fixtures.js\")"
     ]
   }
 }
