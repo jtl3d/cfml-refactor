@@ -12,6 +12,6 @@
 
 <cfif prc.getUsers.recordCount GT 0>
     <cfoutput query="prc.getUsers">
-        <p>#prc.getUsers.name#</p>
+        <p>#prc.getUsers.name# (#prc.getUsers.id#)</p>
     </cfoutput>
 </cfif>

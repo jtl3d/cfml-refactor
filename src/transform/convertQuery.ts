@@ -877,6 +877,12 @@ interface QueryRename {
   baseName: string;
 }
 
+// Scopes a CFML query variable can live under. Used to find references like
+// `variables.foo` or `local.foo` and rewrite them to `prc.foo`. `prc` is
+// excluded — that's our target.
+const RENAMABLE_SCOPES =
+  "variables|local|request|application|session|rc";
+
 function renameQueryReferences(
   source: string,
   renames: QueryRename[]
@@ -884,18 +890,19 @@ function renameQueryReferences(
   let out = source;
   for (const r of renames) {
     if (!r.baseName) continue;
-    if (r.originalName !== r.baseName) {
-      const scopedRe = new RegExp(
-        `(?<![\\w.])${escapeRegex(r.originalName)}\\b`,
-        "g"
-      );
-      out = out.replace(scopedRe, `prc.${r.baseName}`);
-    }
-    const bareRe = new RegExp(
-      `(?<![\\w.])${escapeRegex(r.baseName)}\\b`,
-      "g"
+    const baseEscaped = escapeRegex(r.baseName);
+    const replacement = `prc.${r.baseName}`;
+    // Any known CFML scope prefix on the base name → prc.baseName.
+    // Case-insensitive on the scope to match CFML semantics.
+    const scopedRe = new RegExp(
+      `(?<![\\w.])(?:${RENAMABLE_SCOPES})\\.${baseEscaped}\\b`,
+      "gi"
     );
-    out = out.replace(bareRe, `prc.${r.baseName}`);
+    out = out.replace(scopedRe, replacement);
+    // Bare name → prc.baseName. Excluding `.` and word chars before prevents
+    // double-prefixing `prc.foo` and partial matches inside other identifiers.
+    const bareRe = new RegExp(`(?<![\\w.])${baseEscaped}\\b`, "g");
+    out = out.replace(bareRe, replacement);
   }
   return out;
 }
