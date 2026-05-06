@@ -3,7 +3,10 @@
     var params = {};
 
     if (structKeyExists(arguments, "filter")) {
-        sql &= " SELECT id FROM filtered_things WHERE filter = :filter";
+        sql &= "
+            SELECT id FROM filtered_things
+            WHERE filter = :filter
+        ";
         params.filter = { value: arguments.filter, cfsqltype: "cf_sql_varchar" };
     }
 

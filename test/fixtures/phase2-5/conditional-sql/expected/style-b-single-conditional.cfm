@@ -1,5 +1,8 @@
 <cfscript>
-    var sql = "SELECT * FROM users WHERE active = 1";
+    var sql = "
+        SELECT * FROM users
+        WHERE active = 1
+    ";
     var params = {};
 
     if (structKeyExists(url, "deptId")) {

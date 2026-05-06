@@ -648,9 +648,14 @@ function renderStyleB(
       baseParamEntries.push(formatParamAssign(p, name));
     }
   }
-  const baseSqlNorm = normalizeSqlWhitespace(baseSql);
+  const baseSqlLiteral = formatSqlFragmentLiteral(
+    baseSql,
+    tab1,
+    tabUnit,
+    false
+  );
 
-  lines.push(`${tab1}var sql = ${quote(baseSqlNorm)};`);
+  lines.push(`${tab1}var sql = ${baseSqlLiteral};`);
   lines.push(`${tab1}var params = {};`);
   for (const entry of baseParamEntries) {
     lines.push(`${tab1}params.${entry};`);
@@ -688,10 +693,10 @@ function renderStyleB(
       }
       segIdx++;
     }
-    const norm = normalizeSqlWhitespace(staticSql);
-    if (norm.length > 0) {
+    if (staticSql.trim().length > 0) {
       lines.push("");
-      lines.push(`${tab1}sql &= ${quote(" " + norm)};`);
+      const literal = formatSqlFragmentLiteral(staticSql, tab1, tabUnit, true);
+      lines.push(`${tab1}sql &= ${literal};`);
       for (const sp of staticParams) {
         lines.push(`${tab1}params.${formatParamAssign(sp.p, sp.name)};`);
       }
@@ -777,9 +782,14 @@ function emitConditionalBlock(
         // skip
       }
     }
-    const norm = normalizeSqlWhitespace(sqlText);
-    if (norm.length > 0) {
-      out.push(`${innerIndent}sql &= ${quote(" " + norm)};`);
+    if (sqlText.trim().length > 0) {
+      const literal = formatSqlFragmentLiteral(
+        sqlText,
+        innerIndent,
+        tabUnit,
+        true
+      );
+      out.push(`${innerIndent}sql &= ${literal};`);
     }
     for (const bp of branchParams) {
       out.push(`${innerIndent}params.${formatParamAssign(bp.p, bp.name)};`);
@@ -870,6 +880,49 @@ function formatParamObject(p: QueryParamInfo): string {
 
 function normalizeSqlWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
+}
+
+// Format a SQL fragment as a CFML string literal for use inside a Style B
+// `var sql = ...` or `sql &= ...` assignment. If the fragment occupies a
+// single non-empty line in the source it stays compact (`" AND foo = :bar"`
+// with `leadingSpace=true` for concatenation, no leading space for the first
+// assignment). If it spans multiple lines, it's dedented and re-indented at
+// `baseIndent + tabUnit` and emitted as a multi-line `"\n<sql>\n<baseIndent>"`
+// literal so the original SQL line breaks survive the transform.
+function formatSqlFragmentLiteral(
+  rawSql: string,
+  baseIndent: string,
+  tabUnit: string,
+  leadingSpace: boolean
+): string {
+  let lines = rawSql.split("\n");
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  if (lines.length === 0) return '""';
+
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    const m = line.match(/^[\t ]*/);
+    const n = m ? m[0].length : 0;
+    if (n < minIndent) minIndent = n;
+  }
+  if (!isFinite(minIndent)) minIndent = 0;
+
+  const stripped = lines.map((l) =>
+    l.trim() === "" ? "" : l.slice(minIndent)
+  );
+
+  if (stripped.length === 1) {
+    const escaped = stripped[0].replace(/"/g, '""');
+    return `"${leadingSpace ? " " : ""}${escaped}"`;
+  }
+
+  const contentIndent = baseIndent + tabUnit;
+  const reindented = stripped.map((l) =>
+    l === "" ? "" : contentIndent + l.replace(/"/g, '""')
+  );
+  return `"\n${reindented.join("\n")}\n${baseIndent}"`;
 }
 
 export function transformDocument(
