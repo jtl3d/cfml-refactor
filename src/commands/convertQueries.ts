@@ -3,8 +3,11 @@ import * as vscode from "vscode";
 import { analyze } from "../analyzer/findQueries";
 import { parse } from "../parser/parse";
 import {
+  findRenameMatches,
   shouldSkipTransform,
+  stripScopePrefix,
   transformQuery,
+  type QueryRename,
   type QueryTransformation,
   type SkippedItem,
   type TransformOptions
@@ -46,6 +49,7 @@ export function registerConvertQueries(
       const edit = new vscode.WorkspaceEdit();
       const transformations: Array<{ q: typeof result.queries[number]; t: QueryTransformation }> = [];
       const skipped: SkippedItem[] = [];
+      const renames: QueryRename[] = [];
 
       for (const q of result.queries) {
         const skip = shouldSkipTransform(q);
@@ -67,6 +71,28 @@ export function registerConvertQueries(
           label: `Convert <cfquery> "${q.name}"`
         });
         transformations.push({ q, t });
+        if (q.name && q.name !== "(unnamed)") {
+          renames.push({
+            originalName: q.name,
+            baseName: stripScopePrefix(q.name)
+          });
+        }
+      }
+
+      // Reference renames: `foo` and `variables.foo` → `prc.foo` everywhere
+      // outside the cfquery being replaced. Each match is its own edit so it
+      // shows up individually in VS Code's refactor preview.
+      const transformRanges = transformations.map((tr) => tr.t.range);
+      const renameMatches = findRenameMatches(source, renames, transformRanges);
+      for (const m of renameMatches) {
+        const range = new vscode.Range(
+          doc.positionAt(m.range.start),
+          doc.positionAt(m.range.end)
+        );
+        edit.replace(doc.uri, range, m.replacement, {
+          needsConfirmation: true,
+          label: `Rename to ${m.replacement}`
+        });
       }
 
       for (const s of result.skipped) {
@@ -77,7 +103,7 @@ export function registerConvertQueries(
         });
       }
 
-      writeLog(channel, doc, transformations, skipped);
+      writeLog(channel, doc, transformations, skipped, renameMatches.length);
       channel.show(true);
       const transformed = transformations.length;
 
@@ -125,7 +151,8 @@ function writeLog(
   channel: vscode.OutputChannel,
   doc: vscode.TextDocument,
   transformations: Array<{ q: { name: string; range: { start: number } }; t: QueryTransformation }>,
-  skipped: SkippedItem[]
+  skipped: SkippedItem[],
+  renamedReferences: number
 ): void {
   channel.clear();
   const rel = vscode.workspace.asRelativePath(doc.uri, false);
@@ -135,6 +162,11 @@ function writeLog(
   channel.appendLine(
     `Converted ${transformed} ${transformed === 1 ? "query" : "queries"} to queryExecute`
   );
+  if (renamedReferences > 0) {
+    channel.appendLine(
+      `Renamed ${renamedReferences} ${renamedReferences === 1 ? "reference" : "references"} to prc-scoped form`
+    );
+  }
   transformations.forEach(({ q, t }, idx) => {
     const line = doc.positionAt(q.range.start).line + 1;
     const styleLabel = describeStyle(t.style);

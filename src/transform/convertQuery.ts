@@ -906,23 +906,34 @@ export function transformDocument(
     });
   }
 
-  let output = source;
-  const sorted = [...transformations].sort(
-    (a, b) => b.range.start - a.range.start
-  );
-  for (const t of sorted) {
-    output =
-      output.slice(0, t.range.start) +
-      t.replacement +
-      output.slice(t.range.end);
-  }
+  // Collect the cfquery transformation edits and the reference-rename edits
+  // and apply them all on the original source in one back-to-front pass. The
+  // rename matches exclude any cfquery range, so an in-body `getUsers` (e.g.
+  // a literal SQL string `'getUsers'`) doesn't get touched — only references
+  // outside the cfquery body do.
+  const transformRanges = transformations.map((t) => t.range);
+  const renameMatches = findRenameMatches(source, renames, transformRanges);
+  const allEdits: Array<{ range: Range; replacement: string }> = [
+    ...transformations.map((t) => ({
+      range: t.range,
+      replacement: t.replacement
+    })),
+    ...renameMatches
+  ];
+  allEdits.sort((a, b) => b.range.start - a.range.start);
 
-  output = renameQueryReferences(output, renames);
+  let output = source;
+  for (const e of allEdits) {
+    output =
+      output.slice(0, e.range.start) +
+      e.replacement +
+      output.slice(e.range.end);
+  }
 
   return { output, transformations, skipped };
 }
 
-interface QueryRename {
+export interface QueryRename {
   originalName: string;
   baseName: string;
 }
@@ -933,35 +944,57 @@ interface QueryRename {
 const RENAMABLE_SCOPES =
   "variables|local|request|application|session|rc";
 
-function renameQueryReferences(
+export interface RenameMatch {
+  range: Range;
+  replacement: string;
+}
+
+// Find every spot in `source` where a transformed query's name (bare or
+// scoped via a known CFML scope) should be rewritten to `prc.baseName`. Skips
+// matches inside any `excluded` range so we don't touch the original
+// `<cfquery>` tag or its body — that span is being replaced wholesale by the
+// cfquery → cfscript transformation.
+export function findRenameMatches(
   source: string,
-  renames: QueryRename[]
-): string {
-  let out = source;
+  renames: QueryRename[],
+  excluded: Range[]
+): RenameMatch[] {
+  const out: RenameMatch[] = [];
   for (const r of renames) {
     if (!r.baseName) continue;
-    const baseEscaped = escapeRegex(r.baseName);
     const replacement = `prc.${r.baseName}`;
-    // Any known CFML scope prefix on the base name → prc.baseName.
-    // Case-insensitive on the scope to match CFML semantics.
-    const scopedRe = new RegExp(
-      `(?<![\\w.])(?:${RENAMABLE_SCOPES})\\.${baseEscaped}\\b`,
+    // One regex that matches either `<scope>.baseName` (any known scope) or
+    // bare `baseName`. Case-insensitive to match CFML's case-insensitive
+    // identifiers. The lookbehind `(?<![\w.])` prevents matching `prc.foo`
+    // and identifiers like `someotherFoo` that happen to end in the name.
+    const re = new RegExp(
+      `(?<![\\w.])(?:(?:${RENAMABLE_SCOPES})\\.)?${escapeRegex(r.baseName)}\\b`,
       "gi"
     );
-    out = out.replace(scopedRe, replacement);
-    // Bare name → prc.baseName. Excluding `.` and word chars before prevents
-    // double-prefixing `prc.foo` and partial matches inside other identifiers.
-    const bareRe = new RegExp(`(?<![\\w.])${baseEscaped}\\b`, "g");
-    out = out.replace(bareRe, replacement);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source)) !== null) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (m[0] === replacement) continue;
+      if (rangeOverlapsAny({ start, end }, excluded)) continue;
+      out.push({ range: { start, end }, replacement });
+    }
   }
   return out;
+}
+
+function rangeOverlapsAny(r: Range, ranges: Range[]): boolean {
+  for (const x of ranges) {
+    if (r.start < x.end && r.end > x.start) return true;
+  }
+  return false;
 }
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function stripScopePrefix(name: string): string {
+export function stripScopePrefix(name: string): string {
   return name.replace(SCOPE_PREFIX_RE, "");
 }
 
