@@ -7,5 +7,5 @@
         params.id = { value: arguments.id, cfsqltype: "cf_sql_integer" };
     }
 
-    prc.getRows = queryExecute(sql, params, { datasource: "appdb" });
+    getRows = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getRow = queryExecute(
+    getRow = queryExecute(
         "
             SELECT * FROM things
             WHERE owner_id = :userId

@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getX = queryExecute(
+    getX = queryExecute(
         "
             SELECT 1
         ",

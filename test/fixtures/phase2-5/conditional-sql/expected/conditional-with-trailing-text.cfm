@@ -12,5 +12,5 @@
 
     sql &= " ORDER BY id DESC";
 
-    prc.getRows = queryExecute(sql, params, { datasource: "appdb" });
+    getRows = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

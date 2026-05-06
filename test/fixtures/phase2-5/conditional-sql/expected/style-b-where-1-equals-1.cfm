@@ -15,5 +15,5 @@
         params.minScore = { value: url.minScore, cfsqltype: "cf_sql_integer" };
     }
 
-    prc.getMatches = queryExecute(sql, params, { datasource: "appdb" });
+    getMatches = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

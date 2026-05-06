@@ -1,5 +1,5 @@
 <cfscript>
-    prc.upsertUser = queryExecute(
+    upsertUser = queryExecute(
         "
             UPDATE users SET nickname = :nickname
             WHERE id = :id

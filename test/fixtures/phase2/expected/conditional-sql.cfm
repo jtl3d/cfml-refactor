@@ -10,5 +10,5 @@
         params.name = { value: url.name, cfsqltype: "cf_sql_varchar" };
     }
 
-    prc.getMaybe = queryExecute(sql, params, { datasource: "appdb" });
+    getMaybe = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

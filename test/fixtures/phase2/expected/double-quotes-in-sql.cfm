@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getByName = queryExecute(
+    getByName = queryExecute(
         "
             SELECT * FROM users WHERE name = ""literal"" AND id = :id
         ",

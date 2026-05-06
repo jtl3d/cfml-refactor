@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getThings = queryExecute(
+    getThings = queryExecute(
         "SELECT id, name FROM things WHERE category = 'a' "
         & (includeArchived ? "AND archived = 1" : "AND archived = 0"),
         {},

@@ -6,5 +6,5 @@
         sql &= " AND visible = 1";
     }
 
-    prc.getThings = queryExecute(sql, params, { datasource: "appdb" });
+    getThings = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

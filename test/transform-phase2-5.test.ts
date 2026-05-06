@@ -135,8 +135,8 @@ describe("transform: phase 2.5 datasource exclusion", () => {
     });
     assert.strictEqual(result.transformations.length, 3);
     // a and c should produce 1-arg queryExecute; b should keep datasource.
-    assert.ok(/prc\.a = queryExecute\(\s*"\s*SELECT 1\s*"\s*\)/.test(result.output));
-    assert.ok(/prc\.b = queryExecute\([\s\S]*datasource: "reporting"/.test(result.output));
-    assert.ok(/prc\.c = queryExecute\(\s*"\s*SELECT 3\s*"\s*\)/.test(result.output));
+    assert.ok(/\ba = queryExecute\(\s*"\s*SELECT 1\s*"\s*\)/.test(result.output));
+    assert.ok(/\bb = queryExecute\([\s\S]*datasource: "reporting"/.test(result.output));
+    assert.ok(/\bc = queryExecute\(\s*"\s*SELECT 3\s*"\s*\)/.test(result.output));
   });
 });

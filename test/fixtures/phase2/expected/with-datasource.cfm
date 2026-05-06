@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getCount = queryExecute(
+    getCount = queryExecute(
         "
             SELECT COUNT(*) AS cnt FROM users
         ",

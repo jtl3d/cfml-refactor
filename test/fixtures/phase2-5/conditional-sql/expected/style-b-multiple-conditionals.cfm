@@ -15,5 +15,5 @@
         params.status = { value: url.status, cfsqltype: "cf_sql_varchar" };
     }
 
-    prc.getUsers = queryExecute(sql, params, { datasource: "appdb" });
+    getUsers = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

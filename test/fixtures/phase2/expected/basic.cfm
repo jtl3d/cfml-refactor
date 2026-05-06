@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getUsers = queryExecute(
+    getUsers = queryExecute(
         "
             SELECT id, name, email
             FROM users

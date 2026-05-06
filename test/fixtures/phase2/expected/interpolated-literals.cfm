@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getStuff = queryExecute(
+    getStuff = queryExecute(
         "
             SELECT id FROM widgets
             WHERE active = 1

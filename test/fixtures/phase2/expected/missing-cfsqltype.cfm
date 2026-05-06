@@ -1,6 +1,6 @@
 <cfscript>
     // TODO: cfsqltype missing for "id", defaulted to cf_sql_varchar
-    prc.getUsers = queryExecute(
+    getUsers = queryExecute(
         "
             SELECT * FROM users WHERE id = :id
         ",

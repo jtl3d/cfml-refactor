@@ -31,6 +31,10 @@
         "title": "CFML Refactor: Convert Queries In Place"
       },
       {
+        "command": "cfml-refactor.renameQueriesToPrc",
+        "title": "CFML Refactor: Rename Query Variables to prc"
+      },
+      {
         "command": "cfml-refactor.hoistQueries",
         "title": "CFML Refactor: Hoist Queries"
       },
@@ -135,6 +139,11 @@
           "type": "array",
           "default": [],
           "description": "Datasource attribute values matching these patterns will be omitted from queryExecute options. Exact-match strings against the literal datasource attribute text. Leave empty to always emit datasource."
+        },
+        "cfml-refactor.safeBuiltInFunctions": {
+          "type": "array",
+          "default": [],
+          "description": "Additional built-in CFML function names that are safe to use as a <cfqueryparam> value (extends the built-in safelist). Names match case-insensitively."
         }
       }
     }

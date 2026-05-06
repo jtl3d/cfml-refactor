@@ -1,6 +1,8 @@
 {
   "permissions": {
     "allow": [
+      "Bash(*)",
+      "PowerShell(*)",
       "Bash(npm install *)",
       "Bash(npm run *)",
       "Bash(npm test *)",

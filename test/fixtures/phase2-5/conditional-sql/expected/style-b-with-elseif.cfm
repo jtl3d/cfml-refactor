@@ -17,5 +17,5 @@
         sql &= " ORDER BY id";
     }
 
-    prc.getUsers = queryExecute(sql, params, { datasource: "appdb" });
+    getUsers = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

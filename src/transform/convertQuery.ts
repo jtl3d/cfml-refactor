@@ -2,6 +2,10 @@ import type { AttributeValue, CFMLNode, Range, TagNode } from "../parser/ast";
 import type { QueryInfo, QueryParamInfo } from "../analyzer/types";
 import { analyze } from "../analyzer/findQueries";
 import { parse } from "../parser/parse";
+import {
+  buildSafeBuiltInSet,
+  isSafeBuiltInExpression
+} from "./safeBuiltins";
 
 const KNOWN_CFQUERY_ATTRS = new Set([
   "name",
@@ -35,9 +39,6 @@ const NUMERIC_OPTIONS = new Set<string>([
   "maxrows",
   "blockfactor"
 ]);
-
-const SCOPE_PREFIX_RE =
-  /^(variables|local|request|session|url|form|arguments|application|server|cookie|cgi|this|super|prc|rc)\./i;
 
 const SIMPLE_VAR_RE = /^#([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)#$/;
 
@@ -73,9 +74,16 @@ export interface TransformDocumentResult {
 export interface TransformOptions {
   tabUnit?: string;
   defaultDatasourcePatterns?: string[];
+  // Extra function names to merge into the safe-built-in-function safelist.
+  // Names are matched case-insensitively. The defaults from
+  // `safeBuiltins.DEFAULT_SAFE_BUILTIN_FUNCTIONS` always apply.
+  extraSafeBuiltInFunctions?: ReadonlyArray<string>;
 }
 
-export function shouldSkipTransform(q: QueryInfo): SkipReason | undefined {
+export function shouldSkipTransform(
+  q: QueryInfo,
+  options: TransformOptions = {}
+): SkipReason | undefined {
   if (q.context.insideScript) {
     return { reason: "inside <cfscript> block" };
   }
@@ -88,12 +96,13 @@ export function shouldSkipTransform(q: QueryInfo): SkipReason | undefined {
   if (q.hasSetInBody) {
     return { reason: "<cfset> inside <cfquery> body" };
   }
+  const safelist = buildSafeBuiltInSet(options.extraSafeBuiltInFunctions ?? []);
   for (const p of q.qparams) {
-    if (p.value && p.value.includes("(")) {
-      return {
-        reason: `<cfqueryparam> value contains complex expression: ${p.value}`
-      };
-    }
+    if (!p.value || !p.value.includes("(")) continue;
+    if (isSafeBuiltInExpression(p.value, safelist)) continue;
+    return {
+      reason: `<cfqueryparam> value contains complex expression: ${p.value}`
+    };
   }
   for (const attr of q.rawAttributes.keys()) {
     if (!KNOWN_CFQUERY_ATTRS.has(attr)) {
@@ -934,21 +943,14 @@ export function transformDocument(
 
   const transformations: QueryTransformation[] = [];
   const skipped: SkippedItem[] = [];
-  const renames: QueryRename[] = [];
 
   for (const q of result.queries) {
-    const skip = shouldSkipTransform(q);
+    const skip = shouldSkipTransform(q, options);
     if (skip) {
       skipped.push({ name: q.name, range: q.range, reason: skip.reason });
       continue;
     }
     transformations.push(transformQuery(q, source, options));
-    if (q.name && q.name !== "(unnamed)") {
-      renames.push({
-        originalName: q.name,
-        baseName: stripScopePrefix(q.name)
-      });
-    }
   }
 
   for (const s of result.skipped) {
@@ -959,25 +961,14 @@ export function transformDocument(
     });
   }
 
-  // Build the full edit list. For text outside cfquery ranges, use
-  // `findRenameMatches` (rename anywhere matching the pattern, including
-  // attribute values like `query="foo"`). For each cfquery's replacement,
-  // post-process via `renameInsideTransformation` so references in CFML
-  // expressions (e.g. another query's `value: getUsers.id`) get rewritten
-  // while the SQL string inside the same cfscript is left alone.
-  const transformRanges = transformations.map((t) => t.range);
-  const renameMatches = findRenameMatches(source, renames, transformRanges);
-  const allEdits: Array<{ range: Range; replacement: string }> = [
-    ...transformations.map((t) => ({
-      range: t.range,
-      replacement: renameInsideTransformation(t.replacement, renames)
-    })),
-    ...renameMatches
-  ];
-  allEdits.sort((a, b) => b.range.start - a.range.start);
+  const edits = transformations.map((t) => ({
+    range: t.range,
+    replacement: t.replacement
+  }));
+  edits.sort((a, b) => b.range.start - a.range.start);
 
   let output = source;
-  for (const e of allEdits) {
+  for (const e of edits) {
     output =
       output.slice(0, e.range.start) +
       e.replacement +
@@ -985,127 +976,6 @@ export function transformDocument(
   }
 
   return { output, transformations, skipped };
-}
-
-export interface QueryRename {
-  originalName: string;
-  baseName: string;
-}
-
-// Scopes a CFML query variable can live under. Used to find references like
-// `variables.foo` or `local.foo` and rewrite them to `prc.foo`. `prc` is
-// excluded — that's our target.
-const RENAMABLE_SCOPES =
-  "variables|local|request|application|session|rc";
-
-export interface RenameMatch {
-  range: Range;
-  replacement: string;
-}
-
-// Find every spot in `source` where a transformed query's name (bare or
-// scoped via a known CFML scope) should be rewritten to `prc.baseName`. Skips
-// matches inside any `excluded` range so we don't touch the original
-// `<cfquery>` tag or its body — that span is being replaced wholesale by the
-// cfquery → cfscript transformation.
-export function findRenameMatches(
-  source: string,
-  renames: QueryRename[],
-  excluded: Range[]
-): RenameMatch[] {
-  const out: RenameMatch[] = [];
-  for (const r of renames) {
-    if (!r.baseName) continue;
-    const replacement = `prc.${r.baseName}`;
-    // One regex that matches either `<scope>.baseName` (any known scope) or
-    // bare `baseName`. Case-insensitive to match CFML's case-insensitive
-    // identifiers. The lookbehind `(?<![\w.])` prevents matching `prc.foo`
-    // and identifiers like `someotherFoo` that happen to end in the name.
-    const re = new RegExp(
-      `(?<![\\w.])(?:(?:${RENAMABLE_SCOPES})\\.)?${escapeRegex(r.baseName)}\\b`,
-      "gi"
-    );
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(source)) !== null) {
-      const start = m.index;
-      const end = start + m[0].length;
-      if (m[0] === replacement) continue;
-      if (rangeOverlapsAny({ start, end }, excluded)) continue;
-      out.push({ range: { start, end }, replacement });
-    }
-  }
-  return out;
-}
-
-function rangeOverlapsAny(r: Range, ranges: Range[]): boolean {
-  for (const x of ranges) {
-    if (r.start < x.end && r.end > x.start) return true;
-  }
-  return false;
-}
-
-// Apply rename rules to a CFML script fragment (i.e. the cfscript replacement
-// produced by `transformQuery`), skipping content inside `"..."` string
-// literals. The transformer wraps the SQL body in a double-quoted CFML string;
-// anything else in the fragment is CFML script — expressions like
-// `value: getUsers.id` should be rewritten, but the SQL itself must not be.
-// CFML's escape for `"` inside a double-quoted string is `""`.
-export function renameInsideTransformation(
-  text: string,
-  renames: QueryRename[]
-): string {
-  if (renames.length === 0) return text;
-  const parts: string[] = [];
-  let i = 0;
-  let chunkStart = 0;
-  while (i < text.length) {
-    if (text[i] === '"') {
-      parts.push(applyRenamesToChunk(text.slice(chunkStart, i), renames));
-      const stringStart = i;
-      i++;
-      while (i < text.length) {
-        if (text[i] === '"') {
-          if (text[i + 1] === '"') {
-            i += 2;
-            continue;
-          }
-          i++;
-          break;
-        }
-        i++;
-      }
-      parts.push(text.slice(stringStart, i));
-      chunkStart = i;
-      continue;
-    }
-    i++;
-  }
-  parts.push(applyRenamesToChunk(text.slice(chunkStart), renames));
-  return parts.join("");
-}
-
-function applyRenamesToChunk(
-  text: string,
-  renames: QueryRename[]
-): string {
-  let out = text;
-  for (const r of renames) {
-    if (!r.baseName) continue;
-    const re = new RegExp(
-      `(?<![\\w.])(?:(?:${RENAMABLE_SCOPES})\\.)?${escapeRegex(r.baseName)}\\b`,
-      "gi"
-    );
-    out = out.replace(re, `prc.${r.baseName}`);
-  }
-  return out;
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-export function stripScopePrefix(name: string): string {
-  return name.replace(SCOPE_PREFIX_RE, "");
 }
 
 function analyzerSkipText(reason: string): string {
@@ -1121,8 +991,11 @@ function analyzerSkipText(reason: string): string {
   }
 }
 
+// The query variable name in the queryExecute output is the original cfquery
+// `name=` attribute verbatim. Renaming to a `prc.` form is a separate task
+// (see src/commands/renameQueries.ts) that runs against converted output.
 function makeResultName(name: string): string {
-  return "prc." + stripScopePrefix(name);
+  return name;
 }
 
 function indentOfPosition(source: string, pos: number): string {

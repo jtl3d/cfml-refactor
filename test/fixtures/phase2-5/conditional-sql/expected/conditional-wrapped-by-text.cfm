@@ -13,5 +13,5 @@
 
     sql &= " ORDER BY name";
 
-    prc.foo = queryExecute(sql, params, { datasource: "appdb" });
+    foo = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>

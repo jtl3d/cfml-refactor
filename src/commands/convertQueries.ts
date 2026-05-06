@@ -3,12 +3,8 @@ import * as vscode from "vscode";
 import { analyze } from "../analyzer/findQueries";
 import { parse } from "../parser/parse";
 import {
-  findRenameMatches,
-  renameInsideTransformation,
   shouldSkipTransform,
-  stripScopePrefix,
   transformQuery,
-  type QueryRename,
   type QueryTransformation,
   type SkippedItem,
   type TransformOptions
@@ -42,19 +38,24 @@ export function registerConvertQueries(
         "defaultDatasourcePatterns",
         []
       );
+      const extraSafeBuiltInFunctions = cfg.get<string[]>(
+        "safeBuiltInFunctions",
+        []
+      );
       const transformOpts: TransformOptions = {
         tabUnit,
-        defaultDatasourcePatterns
+        defaultDatasourcePatterns,
+        extraSafeBuiltInFunctions
       };
 
-      const transformations: Array<{ q: typeof result.queries[number]; t: QueryTransformation }> = [];
+      const transformations: Array<{
+        q: typeof result.queries[number];
+        t: QueryTransformation;
+      }> = [];
       const skipped: SkippedItem[] = [];
-      const renames: QueryRename[] = [];
 
-      // Pass 1: build transformations and gather the rename list so the
-      // post-processing step below knows every query name we're converting.
       for (const q of result.queries) {
-        const skip = shouldSkipTransform(q);
+        const skip = shouldSkipTransform(q, transformOpts);
         if (skip) {
           skipped.push({
             name: q.name,
@@ -65,47 +66,17 @@ export function registerConvertQueries(
         }
         const t = transformQuery(q, source, transformOpts);
         transformations.push({ q, t });
-        if (q.name && q.name !== "(unnamed)") {
-          renames.push({
-            originalName: q.name,
-            baseName: stripScopePrefix(q.name)
-          });
-        }
       }
 
-      // Pass 2: queue edits. Each cfquery replacement is post-processed so
-      // CFML expressions inside it (like a sibling query's `value: getUsers.id`
-      // in the params struct) get rewritten to `prc.getUsers.id`, while the
-      // SQL string inside the same cfscript is left alone.
       const edit = new vscode.WorkspaceEdit();
       for (const { q, t } of transformations) {
-        const renamedReplacement = renameInsideTransformation(
-          t.replacement,
-          renames
-        );
         const range = new vscode.Range(
           doc.positionAt(t.range.start),
           doc.positionAt(t.range.end)
         );
-        edit.replace(doc.uri, range, renamedReplacement, {
+        edit.replace(doc.uri, range, t.replacement, {
           needsConfirmation: true,
           label: `Convert <cfquery> "${q.name}"`
-        });
-      }
-
-      // External reference renames: `foo` and `variables.foo` → `prc.foo`
-      // outside any cfquery range. Each match is its own edit so it shows up
-      // individually in VS Code's refactor preview.
-      const transformRanges = transformations.map((tr) => tr.t.range);
-      const renameMatches = findRenameMatches(source, renames, transformRanges);
-      for (const m of renameMatches) {
-        const range = new vscode.Range(
-          doc.positionAt(m.range.start),
-          doc.positionAt(m.range.end)
-        );
-        edit.replace(doc.uri, range, m.replacement, {
-          needsConfirmation: true,
-          label: `Rename to ${m.replacement}`
         });
       }
 
@@ -117,7 +88,7 @@ export function registerConvertQueries(
         });
       }
 
-      writeLog(channel, doc, transformations, skipped, renameMatches.length);
+      writeLog(channel, doc, transformations, skipped);
       channel.show(true);
       const transformed = transformations.length;
 
@@ -165,8 +136,7 @@ function writeLog(
   channel: vscode.OutputChannel,
   doc: vscode.TextDocument,
   transformations: Array<{ q: { name: string; range: { start: number } }; t: QueryTransformation }>,
-  skipped: SkippedItem[],
-  renamedReferences: number
+  skipped: SkippedItem[]
 ): void {
   channel.clear();
   const rel = vscode.workspace.asRelativePath(doc.uri, false);
@@ -176,11 +146,6 @@ function writeLog(
   channel.appendLine(
     `Converted ${transformed} ${transformed === 1 ? "query" : "queries"} to queryExecute`
   );
-  if (renamedReferences > 0) {
-    channel.appendLine(
-      `Renamed ${renamedReferences} ${renamedReferences === 1 ? "reference" : "references"} to prc-scoped form`
-    );
-  }
   transformations.forEach(({ q, t }, idx) => {
     const line = doc.positionAt(q.range.start).line + 1;
     const styleLabel = describeStyle(t.style);

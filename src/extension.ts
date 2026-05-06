@@ -6,10 +6,12 @@ import { registerFindExtractableFunctionsWorkspace } from "./commands/findExtrac
 import { registerFindSimilarQueries } from "./commands/findSimilarQueries";
 import { registerHoistQueries } from "./commands/hoistQueries";
 import { registerIndexWorkspace } from "./commands/indexWorkspace";
+import { registerRenameQueries } from "./commands/renameQueries";
 
 export function activate(context: vscode.ExtensionContext): void {
   registerDetectQueries(context);
   registerConvertQueries(context);
+  registerRenameQueries(context);
   registerHoistQueries(context);
   registerIndexWorkspace(context);
   registerFindSimilarQueries(context);

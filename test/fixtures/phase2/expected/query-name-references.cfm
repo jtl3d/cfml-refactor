@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getUsers = queryExecute(
+    getUsers = queryExecute(
         "
             SELECT id, name FROM users WHERE id = :id
         ",
@@ -10,8 +10,8 @@
     );
 </cfscript>
 
-<cfif prc.getUsers.recordCount GT 0>
-    <cfoutput query="prc.getUsers">
-        <p>#prc.getUsers.name# (#prc.getUsers.id#)</p>
+<cfif variables.getUsers.recordCount GT 0>
+    <cfoutput query="getUsers">
+        <p>#getUsers.name# (#variables.getUsers.id#)</p>
     </cfoutput>
 </cfif>

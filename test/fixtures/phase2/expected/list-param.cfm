@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getByIds = queryExecute(
+    getByIds = queryExecute(
         "
             SELECT * FROM widgets
             WHERE id IN (:ids)

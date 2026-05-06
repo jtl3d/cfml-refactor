@@ -1,5 +1,5 @@
 <cfscript>
-    prc.getStuff = queryExecute(
+    getStuff = queryExecute(
         "
             SELECT * FROM stuff
             WHERE id = :id

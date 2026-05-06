@@ -10,5 +10,5 @@
         params.deptId = { value: url.deptId, cfsqltype: "cf_sql_integer" };
     }
 
-    prc.getUsers = queryExecute(sql, params, { datasource: "appdb" });
+    getUsers = queryExecute(sql, params, { datasource: "appdb" });
 </cfscript>
