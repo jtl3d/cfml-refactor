@@ -160,12 +160,62 @@ function planParams(q: QueryInfo): ParamPlan {
   return { replacements, inlinedAt, structEntries, notes };
 }
 
+// cfsqltype values that map to bare-number SQL literals. Anything not in this
+// set (varchar, char, date, time, etc., or missing/unknown) gets quoted.
+const NUMERIC_CFSQL_TYPES = new Set<string>([
+  "cf_sql_bit",
+  "cf_sql_tinyint",
+  "cf_sql_smallint",
+  "cf_sql_integer",
+  "cf_sql_bigint",
+  "cf_sql_decimal",
+  "cf_sql_numeric",
+  "cf_sql_double",
+  "cf_sql_float",
+  "cf_sql_real",
+  "cf_sql_money",
+  "cf_sql_money4"
+]);
+
+function isNumericCfsqltype(t: string | undefined): boolean {
+  if (!t) return false;
+  return NUMERIC_CFSQL_TYPES.has(t.toLowerCase());
+}
+
+function sqlQuote(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+// Inline a <cfqueryparam> directly into the SQL when its value is hardcoded.
+// Handles: a plain attribute literal (`value="123"`), an interpolated number
+// (`value="#1#"`), and an interpolated string literal (`value="#'foo'#"`).
+// Honors the cfsqltype: numeric types emit a bare number, everything else is
+// quoted as a SQL string.
 function inlinableLiteral(p: QueryParamInfo): string | undefined {
   if (boolAttr(p.rawAttributes, "null")) return undefined;
   if (boolAttr(p.rawAttributes, "list")) return undefined;
   if (p.value === undefined) return undefined;
-  if (p.hasInterpolation) return undefined;
-  return `'${p.value.replace(/'/g, "''")}'`;
+
+  const numeric = isNumericCfsqltype(p.cfsqltype);
+
+  if (!p.hasInterpolation) {
+    if (numeric && /^-?\d+(\.\d+)?$/.test(p.value)) return p.value;
+    return sqlQuote(p.value);
+  }
+
+  const numMatch = p.value.match(/^#(-?\d+(?:\.\d+)?)#$/);
+  if (numMatch) {
+    return numeric ? numMatch[1] : sqlQuote(numMatch[1]);
+  }
+
+  const strMatch = p.value.match(/^#(['"])([\s\S]*?)\1#$/);
+  if (strMatch) {
+    const q = strMatch[1];
+    const unescaped = strMatch[2].split(q + q).join(q);
+    return sqlQuote(unescaped);
+  }
+
+  return undefined;
 }
 
 export function transformQuery(

@@ -3,11 +3,10 @@
         "
             SELECT id, name, email
             FROM users
-            WHERE active = :active
+            WHERE active = 1
               AND dept_id = :deptId
         ",
         {
-            active: { value: 1, cfsqltype: "cf_sql_bit" },
             deptId: { value: url.deptId, cfsqltype: "cf_sql_integer" }
         },
         { datasource: "myDsn" }

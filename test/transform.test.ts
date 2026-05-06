@@ -17,7 +17,8 @@ const PAIRS: ReadonlyArray<readonly [string, "transform" | "unchanged"]> = [
   ["missing-cfsqltype", "transform"],
   ["double-quotes-in-sql", "transform"],
   ["dedup-same-value", "transform"],
-  ["query-name-references", "transform"]
+  ["query-name-references", "transform"],
+  ["interpolated-literals", "transform"]
 ];
 
 function diffString(expected: string, actual: string): string {

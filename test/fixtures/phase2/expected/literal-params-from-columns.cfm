@@ -2,12 +2,10 @@
     prc.getActive = queryExecute(
         "
             SELECT id, name FROM users
-            WHERE active = :active
+            WHERE active = 1
               AND status = 'approved'
         ",
-        {
-            active: { value: 1, cfsqltype: "cf_sql_bit" }
-        },
+        {},
         { datasource: "appdb" }
     );
 </cfscript>
