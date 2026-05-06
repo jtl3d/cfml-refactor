@@ -18,7 +18,8 @@ const PAIRS: ReadonlyArray<readonly [string, "transform" | "unchanged"]> = [
   ["double-quotes-in-sql", "transform"],
   ["dedup-same-value", "transform"],
   ["query-name-references", "transform"],
-  ["interpolated-literals", "transform"]
+  ["interpolated-literals", "transform"],
+  ["cross-query-reference", "transform"]
 ];
 
 function diffString(expected: string, actual: string): string {
@@ -54,7 +55,10 @@ describe("transform: phase 2 fixtures", () => {
           "unchanged fixtures should produce a skip log entry"
         );
       } else {
-        assert.strictEqual(result.transformations.length, 1);
+        assert.ok(
+          result.transformations.length >= 1,
+          "transform fixtures should produce at least one transformation"
+        );
       }
     });
   }

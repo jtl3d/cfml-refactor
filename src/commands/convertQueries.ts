@@ -4,6 +4,7 @@ import { analyze } from "../analyzer/findQueries";
 import { parse } from "../parser/parse";
 import {
   findRenameMatches,
+  renameInsideTransformation,
   shouldSkipTransform,
   stripScopePrefix,
   transformQuery,
@@ -46,11 +47,12 @@ export function registerConvertQueries(
         defaultDatasourcePatterns
       };
 
-      const edit = new vscode.WorkspaceEdit();
       const transformations: Array<{ q: typeof result.queries[number]; t: QueryTransformation }> = [];
       const skipped: SkippedItem[] = [];
       const renames: QueryRename[] = [];
 
+      // Pass 1: build transformations and gather the rename list so the
+      // post-processing step below knows every query name we're converting.
       for (const q of result.queries) {
         const skip = shouldSkipTransform(q);
         if (skip) {
@@ -62,14 +64,6 @@ export function registerConvertQueries(
           continue;
         }
         const t = transformQuery(q, source, transformOpts);
-        const range = new vscode.Range(
-          doc.positionAt(t.range.start),
-          doc.positionAt(t.range.end)
-        );
-        edit.replace(doc.uri, range, t.replacement, {
-          needsConfirmation: true,
-          label: `Convert <cfquery> "${q.name}"`
-        });
         transformations.push({ q, t });
         if (q.name && q.name !== "(unnamed)") {
           renames.push({
@@ -79,9 +73,29 @@ export function registerConvertQueries(
         }
       }
 
-      // Reference renames: `foo` and `variables.foo` → `prc.foo` everywhere
-      // outside the cfquery being replaced. Each match is its own edit so it
-      // shows up individually in VS Code's refactor preview.
+      // Pass 2: queue edits. Each cfquery replacement is post-processed so
+      // CFML expressions inside it (like a sibling query's `value: getUsers.id`
+      // in the params struct) get rewritten to `prc.getUsers.id`, while the
+      // SQL string inside the same cfscript is left alone.
+      const edit = new vscode.WorkspaceEdit();
+      for (const { q, t } of transformations) {
+        const renamedReplacement = renameInsideTransformation(
+          t.replacement,
+          renames
+        );
+        const range = new vscode.Range(
+          doc.positionAt(t.range.start),
+          doc.positionAt(t.range.end)
+        );
+        edit.replace(doc.uri, range, renamedReplacement, {
+          needsConfirmation: true,
+          label: `Convert <cfquery> "${q.name}"`
+        });
+      }
+
+      // External reference renames: `foo` and `variables.foo` → `prc.foo`
+      // outside any cfquery range. Each match is its own edit so it shows up
+      // individually in VS Code's refactor preview.
       const transformRanges = transformations.map((tr) => tr.t.range);
       const renameMatches = findRenameMatches(source, renames, transformRanges);
       for (const m of renameMatches) {

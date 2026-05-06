@@ -906,17 +906,18 @@ export function transformDocument(
     });
   }
 
-  // Collect the cfquery transformation edits and the reference-rename edits
-  // and apply them all on the original source in one back-to-front pass. The
-  // rename matches exclude any cfquery range, so an in-body `getUsers` (e.g.
-  // a literal SQL string `'getUsers'`) doesn't get touched — only references
-  // outside the cfquery body do.
+  // Build the full edit list. For text outside cfquery ranges, use
+  // `findRenameMatches` (rename anywhere matching the pattern, including
+  // attribute values like `query="foo"`). For each cfquery's replacement,
+  // post-process via `renameInsideTransformation` so references in CFML
+  // expressions (e.g. another query's `value: getUsers.id`) get rewritten
+  // while the SQL string inside the same cfscript is left alone.
   const transformRanges = transformations.map((t) => t.range);
   const renameMatches = findRenameMatches(source, renames, transformRanges);
   const allEdits: Array<{ range: Range; replacement: string }> = [
     ...transformations.map((t) => ({
       range: t.range,
-      replacement: t.replacement
+      replacement: renameInsideTransformation(t.replacement, renames)
     })),
     ...renameMatches
   ];
@@ -988,6 +989,62 @@ function rangeOverlapsAny(r: Range, ranges: Range[]): boolean {
     if (r.start < x.end && r.end > x.start) return true;
   }
   return false;
+}
+
+// Apply rename rules to a CFML script fragment (i.e. the cfscript replacement
+// produced by `transformQuery`), skipping content inside `"..."` string
+// literals. The transformer wraps the SQL body in a double-quoted CFML string;
+// anything else in the fragment is CFML script — expressions like
+// `value: getUsers.id` should be rewritten, but the SQL itself must not be.
+// CFML's escape for `"` inside a double-quoted string is `""`.
+export function renameInsideTransformation(
+  text: string,
+  renames: QueryRename[]
+): string {
+  if (renames.length === 0) return text;
+  const parts: string[] = [];
+  let i = 0;
+  let chunkStart = 0;
+  while (i < text.length) {
+    if (text[i] === '"') {
+      parts.push(applyRenamesToChunk(text.slice(chunkStart, i), renames));
+      const stringStart = i;
+      i++;
+      while (i < text.length) {
+        if (text[i] === '"') {
+          if (text[i + 1] === '"') {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      parts.push(text.slice(stringStart, i));
+      chunkStart = i;
+      continue;
+    }
+    i++;
+  }
+  parts.push(applyRenamesToChunk(text.slice(chunkStart), renames));
+  return parts.join("");
+}
+
+function applyRenamesToChunk(
+  text: string,
+  renames: QueryRename[]
+): string {
+  let out = text;
+  for (const r of renames) {
+    if (!r.baseName) continue;
+    const re = new RegExp(
+      `(?<![\\w.])(?:(?:${RENAMABLE_SCOPES})\\.)?${escapeRegex(r.baseName)}\\b`,
+      "gi"
+    );
+    out = out.replace(re, `prc.${r.baseName}`);
+  }
+  return out;
 }
 
 function escapeRegex(s: string): string {
