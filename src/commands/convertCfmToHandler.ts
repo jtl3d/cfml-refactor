@@ -239,13 +239,7 @@ async function pickScopeStyle(): Promise<"var" | "local" | undefined> {
 }
 
 function deriveActionName(baseName: string): string {
-  const parts = baseName.split(/[-_\s]+/).filter((p) => p.length > 0);
-  if (parts.length === 0) return "index";
-  const head = parts[0].toLowerCase();
-  const rest = parts
-    .slice(1)
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
-  return head + rest.join("");
+  return baseName;
 }
 
 function deriveHandlerName(sourcePath: string): string {

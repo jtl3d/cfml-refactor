@@ -153,8 +153,9 @@ export function convertCfmToHandler(
   }
 
   const rescoped: RescopedVar[] = [];
-  for (const [name, mode] of modes) {
-    rescoped.push({ name, mode });
+  for (const [lowerName, mode] of modes) {
+    const display = candidates.get(lowerName) ?? lowerName;
+    rescoped.push({ name: display, mode });
   }
 
   return {
@@ -246,11 +247,11 @@ function collectViewReferenced(viewSource: string): Set<string> {
       const child = im[3];
       const lower = root.toLowerCase();
       if (lower === "variables" && child) {
-        out.add(child);
+        out.add(child.toLowerCase());
         continue;
       }
       if (CFML_SCOPES.has(lower)) continue;
-      out.add(root);
+      out.add(lower);
     }
   }
   return out;
@@ -920,7 +921,7 @@ function formatScopedNameAttr(
   modes: Map<string, "var" | "prc" | "local">
 ): string {
   if (!/^[A-Za-z_]\w*$/.test(rawName)) return quoteCfml(rawName);
-  const mode = modes.get(rawName);
+  const mode = modes.get(rawName.toLowerCase());
   if (mode === "prc") return quoteCfml(`prc.${rawName}`);
   if (mode === "local") return quoteCfml(`local.${rawName}`);
   return quoteCfml(rawName);
@@ -995,8 +996,12 @@ function trimBlankRuns(text: string): string {
 function collectCandidateNames(
   nodes: CFMLNode[],
   source: string
-): Set<string> {
-  const out = new Set<string>();
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const add = (name: string): void => {
+    const key = name.toLowerCase();
+    if (!out.has(key)) out.set(key, name);
+  };
   const visit = (ns: CFMLNode[]): void => {
     for (const n of ns) {
       if (n.type !== "tag") continue;
@@ -1005,16 +1010,16 @@ function collectCandidateNames(
         const m = raw.match(/^<cfset\s+([\s\S]*?)\s*\/?>$/i);
         const expr = m ? m[1].trim() : "";
         const lhs = expr.match(/^(?:variables\.)?([A-Za-z_]\w*)/i);
-        if (lhs) out.add(lhs[1]);
+        if (lhs) add(lhs[1]);
       } else if (n.name === "cfquery") {
         const name = n.attributes.get("name")?.value;
-        if (name) out.add(name);
+        if (name) add(name);
       } else if (n.name === "cfprocparam") {
         const v = n.attributes.get("variable")?.value;
-        if (v && /^[A-Za-z_]\w*$/.test(v)) out.add(v);
+        if (v && /^[A-Za-z_]\w*$/.test(v)) add(v);
       } else if (n.name === "cfprocresult") {
         const name = n.attributes.get("name")?.value;
-        if (name && /^[A-Za-z_]\w*$/.test(name)) out.add(name);
+        if (name && /^[A-Za-z_]\w*$/.test(name)) add(name);
       }
       if (n.children.length > 0 && n.name !== "cffunction") {
         visit(n.children);
@@ -1026,16 +1031,16 @@ function collectCandidateNames(
 }
 
 function computeModes(
-  candidates: Set<string>,
+  candidates: Map<string, string>,
   viewRef: Set<string>,
   scopeStyle: "var" | "local"
 ): Map<string, "var" | "prc" | "local"> {
   const out = new Map<string, "var" | "prc" | "local">();
-  for (const name of candidates) {
-    if (viewRef.has(name)) {
-      out.set(name, "prc");
+  for (const lowerName of candidates.keys()) {
+    if (viewRef.has(lowerName)) {
+      out.set(lowerName, "prc");
     } else {
-      out.set(name, scopeStyle);
+      out.set(lowerName, scopeStyle);
     }
   }
   return out;
@@ -1129,7 +1134,7 @@ function rewriteLiveChunk(
   let out = chunk.replace(
     /\bvariables\.([A-Za-z_]\w*)\b/gi,
     (full, name) => {
-      const mode = modes.get(name);
+      const mode = modes.get(name.toLowerCase());
       if (!mode) return full;
       if (mode === "prc") return `prc.${name}`;
       if (mode === "local") return `local.${name}`;
@@ -1140,14 +1145,15 @@ function rewriteLiveChunk(
   out = out.replace(
     /(?<![.\w])([A-Za-z_]\w*)((?:\.\w+|\[[^\]\n]*\])*)\s*=(?!=)/g,
     (full, name, suffix) => {
-      const mode = modes.get(name);
+      const lower = name.toLowerCase();
+      const mode = modes.get(lower);
       if (!mode) return full;
       const eqMatchIdx = full.lastIndexOf("=");
       const ws = full.slice(name.length + suffix.length, eqMatchIdx);
       if (mode === "prc") return `prc.${name}${suffix}${ws}=`;
       if (mode === "local") return `local.${name}${suffix}${ws}=`;
-      if (suffix.length === 0 && !seenVarFirst.has(name)) {
-        seenVarFirst.add(name);
+      if (suffix.length === 0 && !seenVarFirst.has(lower)) {
+        seenVarFirst.add(lower);
         return `var ${name}${ws}=`;
       }
       return `${name}${suffix}${ws}=`;
@@ -1157,7 +1163,7 @@ function rewriteLiveChunk(
   out = out.replace(
     /(?<![.\w])([A-Za-z_]\w*)\b(?!\s*[(:=])/g,
     (full, name) => {
-      const mode = modes.get(name);
+      const mode = modes.get(name.toLowerCase());
       if (!mode) return full;
       if (mode === "prc") return `prc.${name}`;
       if (mode === "local") return `local.${name}`;
@@ -1176,11 +1182,13 @@ function rewriteViewSource(
   return viewSource.replace(/#([^#]+)#/g, (_full, expr) => {
     let r = expr.replace(
       /\bvariables\.([A-Za-z_]\w*)\b/gi,
-      (m: string, name: string) => (viewRef.has(name) ? `prc.${name}` : m)
+      (m: string, name: string) =>
+        viewRef.has(name.toLowerCase()) ? `prc.${name}` : m
     );
     r = r.replace(
       /(?<![.\w])([A-Za-z_]\w*)\b(?!\s*\()/g,
-      (m: string, name: string) => (viewRef.has(name) ? `prc.${name}` : m)
+      (m: string, name: string) =>
+        viewRef.has(name.toLowerCase()) ? `prc.${name}` : m
     );
     return `#${r}#`;
   });
