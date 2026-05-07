@@ -12,7 +12,7 @@ const PAIRS: ReadonlyArray<readonly [string, "transform" | "unchanged"]> = [
   ["null-param", "transform"],
   ["already-scoped-name", "transform"],
   ["conditional-sql", "transform"],
-  ["qoq", "unchanged"],
+  ["qoq", "transform"],
   ["skip-magic-comment", "unchanged"],
   ["missing-cfsqltype", "transform"],
   ["double-quotes-in-sql", "transform"],

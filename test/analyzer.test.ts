@@ -50,12 +50,16 @@ describe("analyzer.findQueries", () => {
     assert.strictEqual(result.queries[0].hasConditionalSQL, true);
   });
 
-  it("excludes Query of Queries (dbtype=\"query\")", () => {
+  it("includes Query of Queries (dbtype=\"query\") with isQoQ flag", () => {
     const result = run("qoq.cfm");
-    assert.strictEqual(result.queries.length, 1);
-    assert.strictEqual(result.queries[0].name, "getUsers");
-    assert.strictEqual(result.skipped.length, 1);
-    assert.strictEqual(result.skipped[0].reason, "qoq");
+    assert.strictEqual(result.queries.length, 2);
+    const regular = result.queries.find((q) => q.name === "getUsers");
+    const qoq = result.queries.find((q) => q.name === "getActive");
+    assert.ok(regular, "expected regular cfquery to be detected");
+    assert.ok(qoq, "expected QoQ cfquery to be detected");
+    assert.strictEqual(regular.isQoQ, false);
+    assert.strictEqual(qoq.isQoQ, true);
+    assert.strictEqual(result.skipped.length, 0);
   });
 
   it("does not detect queries inside cfscript (Phase 1)", () => {

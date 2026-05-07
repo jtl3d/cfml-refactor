@@ -68,15 +68,23 @@ export function registerConvertQueries(
         transformations.push({ q, t });
       }
 
+      // Group edits in the refactor preview by giving every QoQ conversion
+      // the same `label` (and likewise every non-QoQ conversion the same
+      // label). VS Code's bulk-edit preview uses the metadata label as a
+      // grouping key, so the user can accept or reject each group as a unit.
       const edit = new vscode.WorkspaceEdit();
       for (const { q, t } of transformations) {
         const range = new vscode.Range(
           doc.positionAt(t.range.start),
           doc.positionAt(t.range.end)
         );
+        const groupLabel = q.isQoQ
+          ? "Convert Query of Queries (dbtype=\"query\")"
+          : "Convert <cfquery>";
         edit.replace(doc.uri, range, t.replacement, {
           needsConfirmation: true,
-          label: `Convert <cfquery> "${q.name}"`
+          label: groupLabel,
+          description: q.name
         });
       }
 
@@ -135,7 +143,10 @@ function analyzerSkipText(reason: string): string {
 function writeLog(
   channel: vscode.OutputChannel,
   doc: vscode.TextDocument,
-  transformations: Array<{ q: { name: string; range: { start: number } }; t: QueryTransformation }>,
+  transformations: Array<{
+    q: { name: string; range: { start: number }; isQoQ: boolean };
+    t: QueryTransformation;
+  }>,
   skipped: SkippedItem[]
 ): void {
   channel.clear();
@@ -149,8 +160,9 @@ function writeLog(
   transformations.forEach(({ q, t }, idx) => {
     const line = doc.positionAt(q.range.start).line + 1;
     const styleLabel = describeStyle(t.style);
+    const kind = q.isQoQ ? " (Query of Queries)" : "";
     channel.appendLine(
-      `[${idx + 1}] ${q.name} (line ${line}) — converted with ${styleLabel}`
+      `[${idx + 1}] ${q.name}${kind} (line ${line}) — converted with ${styleLabel}`
     );
     if (t.styleReason) {
       channel.appendLine(`    Reason: ${t.styleReason}`);

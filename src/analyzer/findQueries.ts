@@ -70,15 +70,10 @@ export function analyze(doc: CFMLDocument): AnalysisResult {
           pendingSkip = false;
           continue;
         }
-        const dbtype = getAttr(node, "dbtype");
-        if (dbtype && dbtype.toLowerCase() === "query") {
-          skipped.push({
-            range: node.range,
-            reason: "qoq",
-            name: getAttr(node, "name")
-          });
-          continue;
-        }
+        // Query of Queries (dbtype="query") used to be dropped here. We now
+        // emit it like any other cfquery and tag it via `isQoQ` so the
+        // conversion command can group them separately in the refactor
+        // preview.
         queries.push(buildQueryInfo(node, parent, doc.source));
         continue;
       }
@@ -141,6 +136,8 @@ function buildQueryInfo(
   const hasLoopInBody = containsTagInBody(node, "cfloop");
   const hasSetInBody = containsTagInBody(node, "cfset");
   const qparams = collectQueryParams(node);
+  const dbtype = getAttr(node, "dbtype");
+  const isQoQ = dbtype !== undefined && dbtype.toLowerCase() === "query";
   const context: QueryContext = {
     insideLoop: parent.insideLoop,
     loopType: parent.loopType,
@@ -164,7 +161,8 @@ function buildQueryInfo(
     datasource,
     datasourceAttribute,
     rawAttributes: node.attributes,
-    bodyChildren: node.children
+    bodyChildren: node.children,
+    isQoQ
   };
 }
 

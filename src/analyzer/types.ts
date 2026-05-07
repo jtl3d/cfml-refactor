@@ -43,6 +43,10 @@ export interface QueryInfo {
   datasourceAttribute?: AttributeValue;
   rawAttributes: Map<string, AttributeValue>;
   bodyChildren: CFMLNode[];
+  // True when the source <cfquery> had dbtype="query" (Query of Queries).
+  // Surfaced so the conversion command can group these edits separately in
+  // the refactor preview.
+  isQoQ: boolean;
 }
 
 export interface SkippedQuery {

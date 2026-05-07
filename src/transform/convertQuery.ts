@@ -30,7 +30,8 @@ const OPTIONS_ATTRS = [
   "cachedwithin",
   "cachedafter",
   "maxrows",
-  "blockfactor"
+  "blockfactor",
+  "dbtype"
 ] as const;
 
 const NUMERIC_OPTIONS = new Set<string>([
