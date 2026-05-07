@@ -378,7 +378,8 @@ const TAG_HANDLERS: Record<
   cflock: emitCflock,
   cfstoredproc: emitCfstoredproc,
   cfprocparam: emitCfprocparam,
-  cfprocresult: emitCfprocresult
+  cfprocresult: emitCfprocresult,
+  cftransaction: emitCftransaction
 };
 
 function emitCfset(
@@ -895,6 +896,23 @@ function emitCfprocresult(
     }
   }
   lines.push(`${ctx.indent}cfprocresult(${parts.join(", ")});`);
+}
+
+function emitCftransaction(
+  node: TagNode,
+  ctx: EmitContext,
+  lines: string[]
+): void {
+  const parts: string[] = [];
+  for (const [k, v] of node.attributes) {
+    parts.push(`${k}=${formatAttrValue(v)}`);
+  }
+  const header =
+    parts.length > 0 ? `transaction ${parts.join(" ")} {` : `transaction {`;
+  lines.push(`${ctx.indent}${header}`);
+  const inner: EmitContext = { ...ctx, indent: ctx.indent + ctx.tabUnit };
+  for (const c of node.children) emitNode(c, inner, lines);
+  lines.push(`${ctx.indent}}`);
 }
 
 function formatScopedNameAttr(
