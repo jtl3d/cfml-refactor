@@ -53,6 +53,14 @@
       {
         "command": "cfml-refactor.findExtractableFunctionsWorkspace",
         "title": "CFML Refactor: Find Extractable Functions (Workspace)"
+      },
+      {
+        "command": "cfml-refactor.convertCfmToHandler",
+        "title": "CFML Refactor: Convert CFM to ColdBox Handler"
+      },
+      {
+        "command": "cfml-refactor.convertUrlFormToRc",
+        "title": "CFML Refactor: Convert url/form References to rc"
       }
     ],
     "configuration": {
