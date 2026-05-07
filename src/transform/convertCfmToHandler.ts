@@ -77,6 +77,7 @@ interface EmitContext {
   todos: TodoEntry[];
   tagsConverted: { n: number };
   querySkipped: Array<{ name: string; reason: string }>;
+  modes: Map<string, "var" | "prc" | "local">;
 }
 
 export function convertCfmToHandler(
@@ -116,6 +117,9 @@ export function convertCfmToHandler(
   const viewSource = sliceNodes(source, split.viewNodes);
   const viewReferenced = collectViewReferenced(viewSource);
 
+  const candidates = collectCandidateNames(split.handlerNodes, source);
+  const modes = computeModes(candidates, viewReferenced, scopeStyle);
+
   const ctx: EmitContext = {
     source,
     indent: baseIndent,
@@ -125,16 +129,14 @@ export function convertCfmToHandler(
     cfqueryReplacements,
     todos: [],
     tagsConverted: { n: 0 },
-    querySkipped
+    querySkipped,
+    modes
   };
 
   const lines: string[] = [];
   for (const node of split.handlerNodes) {
     emitNode(node, ctx, lines);
   }
-
-  const candidates = collectCandidateNames(split.handlerNodes, source);
-  const modes = computeModes(candidates, viewReferenced, scopeStyle);
 
   const rawBody = lines.join("\n");
   const trimmed = trimBlankRuns(rawBody);
@@ -373,7 +375,10 @@ const TAG_HANDLERS: Record<
   cfcontinue: emitCfcontinue,
   cfsilent: emitCfsilent,
   cflog: emitCflog,
-  cflock: emitCflock
+  cflock: emitCflock,
+  cfstoredproc: emitCfstoredproc,
+  cfprocparam: emitCfprocparam,
+  cfprocresult: emitCfprocresult
 };
 
 function emitCfset(
@@ -845,6 +850,64 @@ function emitCflock(
   lines.push(`${ctx.indent}}`);
 }
 
+function emitCfstoredproc(
+  node: TagNode,
+  ctx: EmitContext,
+  lines: string[]
+): void {
+  const parts: string[] = [];
+  for (const [k, v] of node.attributes) {
+    parts.push(`${k}=${formatAttrValue(v)}`);
+  }
+  lines.push(`${ctx.indent}cfstoredproc(${parts.join(", ")}) {`);
+  const inner: EmitContext = { ...ctx, indent: ctx.indent + ctx.tabUnit };
+  for (const c of node.children) emitNode(c, inner, lines);
+  lines.push(`${ctx.indent}}`);
+}
+
+function emitCfprocparam(
+  node: TagNode,
+  ctx: EmitContext,
+  lines: string[]
+): void {
+  const parts: string[] = [];
+  for (const [k, v] of node.attributes) {
+    if (k === "variable") {
+      parts.push(`${k}=${formatScopedNameAttr(v.value, ctx.modes)}`);
+    } else {
+      parts.push(`${k}=${formatAttrValue(v)}`);
+    }
+  }
+  lines.push(`${ctx.indent}cfprocparam(${parts.join(", ")});`);
+}
+
+function emitCfprocresult(
+  node: TagNode,
+  ctx: EmitContext,
+  lines: string[]
+): void {
+  const parts: string[] = [];
+  for (const [k, v] of node.attributes) {
+    if (k === "name") {
+      parts.push(`${k}=${formatScopedNameAttr(v.value, ctx.modes)}`);
+    } else {
+      parts.push(`${k}=${formatAttrValue(v)}`);
+    }
+  }
+  lines.push(`${ctx.indent}cfprocresult(${parts.join(", ")});`);
+}
+
+function formatScopedNameAttr(
+  rawName: string,
+  modes: Map<string, "var" | "prc" | "local">
+): string {
+  if (!/^[A-Za-z_]\w*$/.test(rawName)) return quoteCfml(rawName);
+  const mode = modes.get(rawName);
+  if (mode === "prc") return quoteCfml(`prc.${rawName}`);
+  if (mode === "local") return quoteCfml(`local.${rawName}`);
+  return quoteCfml(rawName);
+}
+
 function emitTodoTag(
   node: TagNode,
   ctx: EmitContext,
@@ -928,6 +991,12 @@ function collectCandidateNames(
       } else if (n.name === "cfquery") {
         const name = n.attributes.get("name")?.value;
         if (name) out.add(name);
+      } else if (n.name === "cfprocparam") {
+        const v = n.attributes.get("variable")?.value;
+        if (v && /^[A-Za-z_]\w*$/.test(v)) out.add(v);
+      } else if (n.name === "cfprocresult") {
+        const name = n.attributes.get("name")?.value;
+        if (name && /^[A-Za-z_]\w*$/.test(name)) out.add(name);
       }
       if (n.children.length > 0 && n.name !== "cffunction") {
         visit(n.children);

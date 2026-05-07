@@ -13,7 +13,8 @@ const CONTAINER_TAGS = new Set([
   "cfcomponent",
   "cfsilent",
   "cfthread",
-  "cftransaction"
+  "cftransaction",
+  "cfstoredproc"
 ]);
 
 const VOID_DEFAULTS = new Set([
