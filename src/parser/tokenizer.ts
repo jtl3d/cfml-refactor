@@ -213,8 +213,39 @@ function parseTag(
       if (quote === '"' || quote === "'") {
         pos++;
         const innerStart = pos;
+        // Scan to the closing quote. A `#...#` interpolation block may itself
+        // contain quotes — e.g. value="#GetToken(i,2,"_")#" — so a quote seen
+        // while inside an interpolation must not end the attribute value.
+        let inInterpolation = false;
         while (pos < source.length) {
-          if (source[pos] === quote) {
+          const ch = source[pos];
+          if (ch === "#") {
+            if (!inInterpolation && source[pos + 1] === "#") {
+              pos += 2;
+              continue;
+            }
+            inInterpolation = !inInterpolation;
+            pos++;
+            continue;
+          }
+          if (inInterpolation && (ch === '"' || ch === "'")) {
+            // Skip an embedded string literal inside the interpolation so its
+            // quotes (and any `#` it contains) are not misread.
+            pos++;
+            while (pos < source.length) {
+              if (source[pos] === ch) {
+                if (source[pos + 1] === ch) {
+                  pos += 2;
+                  continue;
+                }
+                pos++;
+                break;
+              }
+              pos++;
+            }
+            continue;
+          }
+          if (!inInterpolation && ch === quote) {
             if (source[pos + 1] === quote) {
               pos += 2;
               continue;

@@ -20,7 +20,6 @@ export interface ConvertCfmOptions {
   scopeStyle?: "var" | "local";
   tabUnit?: string;
   defaultDatasourcePatterns?: string[];
-  extraSafeBuiltInFunctions?: string[];
 }
 
 export interface RescopedVar {
@@ -65,7 +64,14 @@ const CFML_SCOPES = new Set([
   "form"
 ]);
 
-const VIEW_LIKE_TAGS = new Set(["cfoutput"]);
+// Container tags that belong to the view only when they wrap presentation
+// markup — a <cfif>/<cfloop>/<cfswitch> around HTML is layout logic, but the
+// same tag around pure logic stays in the handler.
+const LAYOUT_CONTAINER_TAGS = new Set(["cfif", "cfloop", "cfswitch"]);
+
+// Attributes whose value is a bare variable reference (no #...#) that the view
+// may share with the handler, so they participate in prc rescoping.
+const VIEW_REF_ATTRS = ["query", "array", "collection", "condition"];
 
 interface EmitContext {
   source: string;
@@ -90,8 +96,7 @@ export function convertCfmToHandler(
 
   const transformOpts: TransformOptions = {
     tabUnit,
-    defaultDatasourcePatterns: options.defaultDatasourcePatterns,
-    extraSafeBuiltInFunctions: options.extraSafeBuiltInFunctions
+    defaultDatasourcePatterns: options.defaultDatasourcePatterns
   };
 
   const doc = parse(source);
@@ -103,7 +108,7 @@ export function convertCfmToHandler(
   >();
   const querySkipped: Array<{ name: string; reason: string }> = [];
   for (const q of analysis.queries) {
-    const skip = shouldSkipTransform(q, transformOpts);
+    const skip = shouldSkipTransform(q);
     if (skip) {
       cfqueryReplacements.set(q.range.start, { skipReason: skip.reason });
       querySkipped.push({ name: q.name, reason: skip.reason });
@@ -115,7 +120,7 @@ export function convertCfmToHandler(
 
   const split = splitHandlerView(doc.children);
   const viewSource = sliceNodes(source, split.viewNodes);
-  const viewReferenced = collectViewReferenced(viewSource);
+  const viewReferenced = collectViewReferenced(split.viewNodes, source);
 
   const candidates = collectCandidateNames(split.handlerNodes, source);
   const modes = computeModes(candidates, viewReferenced, scopeStyle);
@@ -149,7 +154,11 @@ export function convertCfmToHandler(
 
   let viewBody = "";
   if (hasView) {
-    viewBody = rewriteViewSource(viewSource, viewReferenced);
+    const prcNames = new Set<string>();
+    for (const [name, mode] of modes) {
+      if (mode === "prc") prcNames.add(name);
+    }
+    viewBody = rewriteViewSource(split.viewNodes, source, prcNames);
   }
 
   const rescoped: RescopedVar[] = [];
@@ -203,24 +212,24 @@ function splitHandlerView(children: CFMLNode[]): SplitResult {
 function isViewLike(node: CFMLNode): boolean {
   if (node.type === "content") return true;
   if (node.type === "comment") return true;
-  if (node.type === "tag" && VIEW_LIKE_TAGS.has(node.name)) {
-    return !cfoutputContainsLogic(node);
-  }
+  if (node.type === "script") return false;
+  // A <cfoutput> exists to render output, so it is always view markup — even
+  // when it wraps <cfif>/<cfloop> that drive the layout.
+  if (node.name === "cfoutput") return true;
+  if (LAYOUT_CONTAINER_TAGS.has(node.name)) return tagContainsMarkup(node);
   return false;
 }
 
-function cfoutputContainsLogic(tag: TagNode): boolean {
-  for (const child of tag.children) {
+// True when a tag's subtree contains presentation markup — raw HTML/text or a
+// <cfoutput> block — meaning the tag is layout that belongs in the view.
+function tagContainsMarkup(node: TagNode): boolean {
+  for (const child of node.children) {
+    if (child.type === "content" && child.text.trim().length > 0) {
+      return true;
+    }
     if (child.type === "tag") {
-      if (
-        child.name === "cfset" ||
-        child.name === "cfquery" ||
-        child.name === "cfif" ||
-        child.name === "cfloop" ||
-        child.name === "cflocation"
-      ) {
-        return true;
-      }
+      if (child.name === "cfoutput") return true;
+      if (tagContainsMarkup(child)) return true;
     }
   }
   return false;
@@ -233,16 +242,19 @@ function sliceNodes(source: string, nodes: CFMLNode[]): string {
   return source.slice(start, end);
 }
 
-function collectViewReferenced(viewSource: string): Set<string> {
+// Identifier references that decide which handler variables must be shared
+// with the view (and so become `prc`). Scans #...# interpolations plus the
+// expression-bearing attributes and <cfif> conditions of the view tags.
+function collectViewReferenced(
+  nodes: CFMLNode[],
+  source: string
+): Set<string> {
   const out = new Set<string>();
-  if (viewSource.length === 0) return out;
-  const re = /#([^#]+)#/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(viewSource)) !== null) {
-    const inner = m[1];
+
+  const collectIdents = (expr: string): void => {
     const idRe = /(^|[^.\w])([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?/g;
     let im: RegExpExecArray | null;
-    while ((im = idRe.exec(inner)) !== null) {
+    while ((im = idRe.exec(expr)) !== null) {
       const root = im[2];
       const child = im[3];
       const lower = root.toLowerCase();
@@ -253,7 +265,42 @@ function collectViewReferenced(viewSource: string): Set<string> {
       if (CFML_SCOPES.has(lower)) continue;
       out.add(lower);
     }
-  }
+  };
+
+  const collectFromText = (text: string): void => {
+    const re = /#([^#]+)#/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) collectIdents(m[1]);
+  };
+
+  const visit = (ns: CFMLNode[]): void => {
+    for (const n of ns) {
+      if (n.type === "content") {
+        collectFromText(n.text);
+        continue;
+      }
+      if (n.type === "comment" || n.type === "script") continue;
+      const openText = source.slice(
+        n.openTagRange.start,
+        n.openTagRange.end
+      );
+      collectFromText(openText);
+      if (n.name === "cfif" || n.name === "cfelseif") {
+        const cond = openText.match(
+          /^<cf(?:if|elseif)\b\s*([\s\S]*?)\s*\/?>$/i
+        );
+        if (cond) collectIdents(cond[1]);
+      } else {
+        for (const key of VIEW_REF_ATTRS) {
+          const attr = n.attributes.get(key);
+          if (attr && !attr.hasInterpolation) collectIdents(attr.value);
+        }
+      }
+      visit(n.children);
+    }
+  };
+
+  visit(nodes);
   return out;
 }
 
@@ -1174,24 +1221,83 @@ function rewriteLiveChunk(
   return out;
 }
 
+// Rebuild the view text from its parsed nodes, qualifying references to
+// handler variables that were rescoped to `prc` so the view still resolves
+// them. Raw HTML is copied verbatim; only CFML expressions — #...#
+// interpolations, <cfif> conditions, and variable-bearing attributes — are
+// rewritten.
 function rewriteViewSource(
-  viewSource: string,
-  viewRef: Set<string>
+  nodes: CFMLNode[],
+  source: string,
+  prcNames: Set<string>
 ): string {
-  if (viewRef.size === 0) return viewSource;
-  return viewSource.replace(/#([^#]+)#/g, (_full, expr) => {
-    let r = expr.replace(
-      /\bvariables\.([A-Za-z_]\w*)\b/gi,
-      (m: string, name: string) =>
-        viewRef.has(name.toLowerCase()) ? `prc.${name}` : m
+  const emit = (node: CFMLNode): string => {
+    if (node.type === "content") {
+      return rewriteInterpolations(node.text, prcNames);
+    }
+    if (node.type === "comment" || node.type === "script") {
+      return source.slice(node.range.start, node.range.end);
+    }
+    const openText = source.slice(
+      node.openTagRange.start,
+      node.openTagRange.end
     );
-    r = r.replace(
-      /(?<![.\w])([A-Za-z_]\w*)\b(?!\s*\()/g,
-      (m: string, name: string) =>
-        viewRef.has(name.toLowerCase()) ? `prc.${name}` : m
+    const open = rewriteViewTagOpen(openText, node, prcNames);
+    const body = node.children.map(emit).join("");
+    const close = node.closeTagRange
+      ? source.slice(node.closeTagRange.start, node.closeTagRange.end)
+      : "";
+    return open + body + close;
+  };
+  return nodes.map(emit).join("");
+}
+
+// Qualify the bare identifier references in one CFML expression.
+function rewriteExprIdents(expr: string, prcNames: Set<string>): string {
+  let r = expr.replace(
+    /\bvariables\.([A-Za-z_]\w*)\b/gi,
+    (m: string, name: string) =>
+      prcNames.has(name.toLowerCase()) ? `prc.${name}` : m
+  );
+  r = r.replace(
+    /(?<![.\w])([A-Za-z_]\w*)\b(?!\s*\()/g,
+    (m: string, name: string) =>
+      prcNames.has(name.toLowerCase()) ? `prc.${name}` : m
+  );
+  return r;
+}
+
+// Rewrite every #...# interpolation block in a run of view text.
+function rewriteInterpolations(text: string, prcNames: Set<string>): string {
+  return text.replace(
+    /#([^#]+)#/g,
+    (_full, expr: string) => `#${rewriteExprIdents(expr, prcNames)}#`
+  );
+}
+
+function rewriteViewTagOpen(
+  openText: string,
+  node: TagNode,
+  prcNames: Set<string>
+): string {
+  const out = rewriteInterpolations(openText, prcNames);
+  if (node.name === "cfif" || node.name === "cfelseif") {
+    return out.replace(
+      /^(<cf(?:if|elseif)\b\s*)([\s\S]*?)(\s*\/?>)$/i,
+      (_full, head: string, cond: string, tail: string) =>
+        head + rewriteExprIdents(cond, prcNames) + tail
     );
-    return `#${r}#`;
-  });
+  }
+  // query/array/collection/condition attributes hold variable references.
+  return out.replace(
+    /\b(query|array|collection|condition)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>/]+)/gi,
+    (full, name: string, eq: string, val: string) => {
+      if (val.includes("#")) return full;
+      const q = val[0] === '"' || val[0] === "'" ? val[0] : "";
+      const inner = q ? val.slice(1, -1) : val;
+      return `${name}${eq}${q}${rewriteExprIdents(inner, prcNames)}${q}`;
+    }
+  );
 }
 
 export interface MergeHandlerResult {

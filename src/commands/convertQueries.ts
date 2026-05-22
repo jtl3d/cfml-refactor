@@ -38,14 +38,9 @@ export function registerConvertQueries(
         "defaultDatasourcePatterns",
         []
       );
-      const extraSafeBuiltInFunctions = cfg.get<string[]>(
-        "safeBuiltInFunctions",
-        []
-      );
       const transformOpts: TransformOptions = {
         tabUnit,
-        defaultDatasourcePatterns,
-        extraSafeBuiltInFunctions
+        defaultDatasourcePatterns
       };
 
       const transformations: Array<{
@@ -55,7 +50,7 @@ export function registerConvertQueries(
       const skipped: SkippedItem[] = [];
 
       for (const q of result.queries) {
-        const skip = shouldSkipTransform(q, transformOpts);
+        const skip = shouldSkipTransform(q);
         if (skip) {
           skipped.push({
             name: q.name,

@@ -83,15 +83,26 @@ describe("transform: phase 2 fixtures", () => {
     assert.match(result.skipped[0].reason, /<cfloop>/);
   });
 
-  it("skips a cfqueryparam value containing a function call", () => {
+  it("keeps a cfqueryparam value containing a function call verbatim", () => {
     const src =
       `<cfquery name="x" datasource="db">\n` +
       `    SELECT 1 WHERE id = <cfqueryparam value="#someFunc(x)#" cfsqltype="cf_sql_integer">\n` +
       `</cfquery>\n`;
     const result = transformDocument(src);
-    assert.strictEqual(result.transformations.length, 0);
-    assert.strictEqual(result.skipped.length, 1);
-    assert.match(result.skipped[0].reason, /complex expression/);
+    assert.strictEqual(result.skipped.length, 0);
+    assert.strictEqual(result.transformations.length, 1);
+    assert.match(result.output, /value: someFunc\(x\)/);
+  });
+
+  it("keeps a cfqueryparam value with quotes nested in #...#", () => {
+    const src =
+      `<cfquery name="x" datasource="db">\n` +
+      `    SELECT 1 WHERE id = <cfqueryparam value="#GetToken(i,2,"_")#" cfsqltype="cf_sql_numeric">\n` +
+      `</cfquery>\n`;
+    const result = transformDocument(src);
+    assert.strictEqual(result.skipped.length, 0);
+    assert.strictEqual(result.transformations.length, 1);
+    assert.match(result.output, /value: GetToken\(i,2,"_"\)/);
   });
 
   it("skips queries with unknown <cfquery> attributes", () => {

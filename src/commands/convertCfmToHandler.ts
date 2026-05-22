@@ -74,10 +74,6 @@ export function registerConvertCfmToHandler(
         "defaultDatasourcePatterns",
         []
       );
-      const extraSafeBuiltInFunctions = cfg.get<string[]>(
-        "safeBuiltInFunctions",
-        []
-      );
       const tabUnit = computeTabUnit(editor);
 
       const source = editor.document.getText();
@@ -86,8 +82,7 @@ export function registerConvertCfmToHandler(
         viewPath: `${handlerName}/${actionName}`,
         scopeStyle,
         tabUnit,
-        defaultDatasourcePatterns,
-        extraSafeBuiltInFunctions
+        defaultDatasourcePatterns
       };
 
       const result = convertCfmToHandler(source, opts);

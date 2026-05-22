@@ -2,10 +2,6 @@ import type { AttributeValue, CFMLNode, Range, TagNode } from "../parser/ast";
 import type { QueryInfo, QueryParamInfo } from "../analyzer/types";
 import { analyze } from "../analyzer/findQueries";
 import { parse } from "../parser/parse";
-import {
-  buildSafeBuiltInSet,
-  isSafeBuiltInExpression
-} from "./safeBuiltins";
 
 const KNOWN_CFQUERY_ATTRS = new Set([
   "name",
@@ -75,15 +71,13 @@ export interface TransformDocumentResult {
 export interface TransformOptions {
   tabUnit?: string;
   defaultDatasourcePatterns?: string[];
-  // Extra function names to merge into the safe-built-in-function safelist.
-  // Names are matched case-insensitively. The defaults from
-  // `safeBuiltins.DEFAULT_SAFE_BUILTIN_FUNCTIONS` always apply.
-  extraSafeBuiltInFunctions?: ReadonlyArray<string>;
 }
 
+// A `<cfqueryparam>` value is always carried over verbatim as the queryExecute
+// param's `value:` expression — function calls and other expressions included —
+// so no value shape causes a skip here.
 export function shouldSkipTransform(
-  q: QueryInfo,
-  options: TransformOptions = {}
+  q: QueryInfo
 ): SkipReason | undefined {
   if (q.context.insideScript) {
     return { reason: "inside <cfscript> block" };
@@ -96,14 +90,6 @@ export function shouldSkipTransform(
   }
   if (q.hasSetInBody) {
     return { reason: "<cfset> inside <cfquery> body" };
-  }
-  const safelist = buildSafeBuiltInSet(options.extraSafeBuiltInFunctions ?? []);
-  for (const p of q.qparams) {
-    if (!p.value || !p.value.includes("(")) continue;
-    if (isSafeBuiltInExpression(p.value, safelist)) continue;
-    return {
-      reason: `<cfqueryparam> value contains complex expression: ${p.value}`
-    };
   }
   for (const attr of q.rawAttributes.keys()) {
     if (!KNOWN_CFQUERY_ATTRS.has(attr)) {
@@ -946,7 +932,7 @@ export function transformDocument(
   const skipped: SkippedItem[] = [];
 
   for (const q of result.queries) {
-    const skip = shouldSkipTransform(q, options);
+    const skip = shouldSkipTransform(q);
     if (skip) {
       skipped.push({ name: q.name, range: q.range, reason: skip.reason });
       continue;
