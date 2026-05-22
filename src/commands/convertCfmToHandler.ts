@@ -49,22 +49,23 @@ export function registerConvertCfmToHandler(
       });
       if (!handlerName) return;
 
-      const defaultHandlerPath = deriveHandlerFilePath(sourcePath, handlerName);
+      // Default the view beside the .cfm being converted, then extrapolate the
+      // handler path from wherever the view lands (ColdBox views/ <-> handlers/).
+      const defaultViewPath = deriveViewFilePath(sourcePath, actionName);
+      const viewPath = await vscode.window.showInputBox({
+        prompt: "Target view file path (.cfm) — leave blank to skip",
+        value: defaultViewPath
+      });
+
+      const defaultHandlerPath = deriveHandlerFilePath(
+        viewPath && viewPath.length > 0 ? viewPath : sourcePath,
+        handlerName
+      );
       const handlerPath = await vscode.window.showInputBox({
         prompt: "Target handler file path (.cfc)",
         value: defaultHandlerPath
       });
       if (!handlerPath) return;
-
-      const defaultViewPath = deriveViewFilePath(
-        sourcePath,
-        handlerName,
-        actionName
-      );
-      const viewPath = await vscode.window.showInputBox({
-        prompt: "Target view file path (.cfm) — leave blank to skip",
-        value: defaultViewPath
-      });
 
       const scopeStyle = await pickScopeStyle();
       if (!scopeStyle) return;
@@ -243,23 +244,32 @@ function deriveHandlerName(sourcePath: string): string {
   return "main";
 }
 
-function deriveHandlerFilePath(
-  sourcePath: string,
-  handlerName: string
-): string {
-  const ws = vscode.workspace.workspaceFolders?.[0];
-  const root = ws?.uri.fsPath ?? path.dirname(sourcePath);
-  return path.join(root, "handlers", `${handlerName}.cfc`);
+// The new view defaults to the directory of the .cfm being converted — that
+// file is itself the "current view" being modernized.
+function deriveViewFilePath(sourcePath: string, actionName: string): string {
+  return path.join(path.dirname(sourcePath), `${actionName}.cfm`);
 }
 
-function deriveViewFilePath(
-  sourcePath: string,
-  handlerName: string,
-  actionName: string
+// ColdBox lays out views/<handler>/<action>.cfm beside handlers/<handler>.cfc.
+// Walk up from the chosen view for a "views" directory and place the handler
+// next to it; if there is none, fall back to a handlers/ folder at the
+// workspace root.
+function deriveHandlerFilePath(
+  viewPath: string,
+  handlerName: string
 ): string {
+  let cursor = path.dirname(viewPath);
+  while (true) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    if (path.basename(cursor).toLowerCase() === "views") {
+      return path.join(parent, "handlers", `${handlerName}.cfc`);
+    }
+    cursor = parent;
+  }
   const ws = vscode.workspace.workspaceFolders?.[0];
-  const root = ws?.uri.fsPath ?? path.dirname(sourcePath);
-  return path.join(root, "views", handlerName, `${actionName}.cfm`);
+  const root = ws?.uri.fsPath ?? path.dirname(viewPath);
+  return path.join(root, "handlers", `${handlerName}.cfc`);
 }
 
 function computeTabUnit(editor: vscode.TextEditor): string {
