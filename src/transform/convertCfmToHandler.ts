@@ -64,10 +64,11 @@ const CFML_SCOPES = new Set([
   "form"
 ]);
 
-// Container tags that belong to the view only when they wrap presentation
-// markup — a <cfif>/<cfloop>/<cfswitch> around HTML is layout logic, but the
-// same tag around pure logic stays in the handler.
-const LAYOUT_CONTAINER_TAGS = new Set(["cfif", "cfloop", "cfswitch"]);
+// Data-access tags must always be converted to cfscript in the handler. A
+// container that holds one (anywhere in its subtree) is therefore handler
+// logic, never view markup — the query has to move out even if the container
+// also wraps presentation.
+const DATA_ACCESS_TAGS = new Set(["cfquery", "cfstoredproc"]);
 
 // Attributes whose value is a bare variable reference (no #...#) that the view
 // may share with the handler, so they participate in prc rescoping.
@@ -84,6 +85,7 @@ interface EmitContext {
   tagsConverted: { n: number };
   querySkipped: Array<{ name: string; reason: string }>;
   modes: Map<string, "var" | "prc" | "local">;
+  prcNames: Set<string>;
 }
 
 export function convertCfmToHandler(
@@ -118,12 +120,13 @@ export function convertCfmToHandler(
     cfqueryReplacements.set(q.range.start, t.replacement);
   }
 
-  const split = splitHandlerView(doc.children);
-  const viewSource = sliceNodes(source, split.viewNodes);
-  const viewReferenced = collectViewReferenced(split.viewNodes, source);
-
-  const candidates = collectCandidateNames(split.handlerNodes, source);
+  const candidates = collectCandidateNames(doc.children, source);
+  const viewReferenced = collectViewReferenced(doc.children, source);
   const modes = computeModes(candidates, viewReferenced, scopeStyle);
+  const prcNames = new Set<string>();
+  for (const [name, mode] of modes) {
+    if (mode === "prc") prcNames.add(name);
+  }
 
   const ctx: EmitContext = {
     source,
@@ -135,31 +138,20 @@ export function convertCfmToHandler(
     todos: [],
     tagsConverted: { n: 0 },
     querySkipped,
-    modes
+    modes,
+    prcNames
   };
 
-  const lines: string[] = [];
-  for (const node of split.handlerNodes) {
-    emitNode(node, ctx, lines);
-  }
+  const split = processNodes(doc.children, ctx);
+  const handlerBody = applyScoping(
+    trimBlankRuns(split.handler.join("\n")),
+    modes
+  );
 
-  const rawBody = lines.join("\n");
-  const trimmed = trimBlankRuns(rawBody);
-  const rewritten = applyScoping(trimmed, modes);
-
-  const hasView = split.viewNodes.length > 0 && viewSource.trim().length > 0;
+  const hasView = split.view.trim().length > 0;
   const setViewCall = hasView
     ? `event.setView( "${options.viewPath}" );`
     : undefined;
-
-  let viewBody = "";
-  if (hasView) {
-    const prcNames = new Set<string>();
-    for (const [name, mode] of modes) {
-      if (mode === "prc") prcNames.add(name);
-    }
-    viewBody = rewriteViewSource(split.viewNodes, source, prcNames);
-  }
 
   const rescoped: RescopedVar[] = [];
   for (const [lowerName, mode] of modes) {
@@ -168,9 +160,9 @@ export function convertCfmToHandler(
   }
 
   return {
-    handlerBody: rewritten,
+    handlerBody,
     hasView,
-    viewBody,
+    viewBody: hasView ? split.view : "",
     todos: ctx.todos,
     tagsConverted: ctx.tagsConverted.n,
     rescoped,
@@ -179,44 +171,282 @@ export function convertCfmToHandler(
   };
 }
 
-interface SplitResult {
-  handlerNodes: CFMLNode[];
-  viewNodes: CFMLNode[];
+// --- Recursive handler/view split -----------------------------------------
+//
+// Each node is partitioned into a handler part (cfscript) and a view part
+// (markup). Pure logic flows entirely to the handler, pure markup entirely to
+// the view, and mixed containers are split: a <cfif> duplicates its condition,
+// a <cfoutput> splits its children, and a <cfloop> holding a query becomes a
+// view model — the handler reproduces the loop to pre-build a keyed struct
+// that the view reads back, one entry per iteration.
+
+interface SplitText {
+  handler: string[];
+  view: string;
 }
 
-function splitHandlerView(children: CFMLNode[]): SplitResult {
-  let i = children.length;
-  while (i > 0) {
-    const node = children[i - 1];
-    if (!isViewLike(node)) break;
-    i--;
+function processNodes(nodes: CFMLNode[], ctx: EmitContext): SplitText {
+  const handler: string[] = [];
+  let view = "";
+  for (const node of nodes) {
+    const r = processNode(node, ctx);
+    handler.push(...r.handler);
+    view += r.view;
   }
-  while (i > 0) {
-    const node = children[i - 1];
-    if (node.type === "comment") {
-      i--;
-      continue;
-    }
-    if (node.type === "content" && node.text.trim().length === 0) {
-      i--;
-      continue;
-    }
-    break;
-  }
-  return {
-    handlerNodes: children.slice(0, i),
-    viewNodes: children.slice(i)
-  };
+  return { handler, view };
 }
 
-function isViewLike(node: CFMLNode): boolean {
-  if (node.type === "content") return true;
-  if (node.type === "comment") return true;
-  if (node.type === "script") return false;
-  // A <cfoutput> exists to render output, so it is always view markup — even
-  // when it wraps <cfif>/<cfloop> that drive the layout.
-  if (node.name === "cfoutput") return true;
-  if (LAYOUT_CONTAINER_TAGS.has(node.name)) return tagContainsMarkup(node);
+function processNode(node: CFMLNode, ctx: EmitContext): SplitText {
+  if (node.type === "content") {
+    return {
+      handler: [],
+      view: rewriteInterpolations(node.text, ctx.prcNames)
+    };
+  }
+  if (node.type === "comment" || node.type === "script") {
+    return { handler: emitToHandler(node, ctx), view: "" };
+  }
+  switch (node.name) {
+    case "cfoutput":
+      return processCfoutput(node, ctx);
+    case "cfif":
+      return processCfif(node, ctx);
+    case "cfloop":
+      return processCfloop(node, ctx);
+    case "cfswitch":
+      return processCfswitch(node, ctx);
+    default:
+      return { handler: emitToHandler(node, ctx), view: "" };
+  }
+}
+
+function emitToHandler(node: CFMLNode, ctx: EmitContext): string[] {
+  const lines: string[] = [];
+  emitNode(node, ctx, lines);
+  return lines;
+}
+
+function nodesHaveMarkup(nodes: CFMLNode[]): boolean {
+  for (const n of nodes) {
+    if (n.type === "content" && n.text.trim().length > 0) return true;
+    if (n.type === "tag") {
+      if (n.name === "cfoutput") return true;
+      if (tagContainsMarkup(n)) return true;
+    }
+  }
+  return false;
+}
+
+function processCfoutput(node: TagNode, ctx: EmitContext): SplitText {
+  if (!tagContainsDataAccess(node)) {
+    return {
+      handler: [],
+      view: rewriteViewSource([node], ctx.source, ctx.prcNames)
+    };
+  }
+  const inner = processNodes(node.children, ctx);
+  if (inner.view.trim().length === 0) {
+    return { handler: inner.handler, view: "" };
+  }
+  const open = rewriteViewTagOpen(
+    ctx.source.slice(node.openTagRange.start, node.openTagRange.end),
+    node,
+    ctx.prcNames
+  );
+  const close = node.closeTagRange
+    ? ctx.source.slice(node.closeTagRange.start, node.closeTagRange.end)
+    : "</cfoutput>";
+  return { handler: inner.handler, view: open + inner.view + close };
+}
+
+function processCfif(node: TagNode, ctx: EmitContext): SplitText {
+  const branches = splitIfBranches(node, ctx.source);
+  if (!branches.some((b) => nodesHaveMarkup(b.children))) {
+    return { handler: emitToHandler(node, ctx), view: "" };
+  }
+  if (!tagContainsDataAccess(node)) {
+    return {
+      handler: [],
+      view: rewriteViewSource([node], ctx.source, ctx.prcNames)
+    };
+  }
+  // Mixed: the condition is duplicated — guarded logic in the handler,
+  // guarded markup in the view.
+  const handler: string[] = [];
+  let view = "";
+  const innerCtx: EmitContext = { ...ctx, indent: ctx.indent + ctx.tabUnit };
+  branches.forEach((b, i) => {
+    const cond = b.condition ?? "true";
+    if (i === 0) handler.push(`${ctx.indent}if (${cond}) {`);
+    else if (b.kind === "elseif") {
+      handler.push(`${ctx.indent}} else if (${cond}) {`);
+    } else handler.push(`${ctx.indent}} else {`);
+    const inner = processNodes(b.children, innerCtx);
+    handler.push(...inner.handler);
+
+    const viewCond = rewriteExprIdents(cond, ctx.prcNames);
+    if (i === 0) view += `<cfif ${viewCond}>`;
+    else if (b.kind === "elseif") view += `<cfelseif ${viewCond}>`;
+    else view += `<cfelse>`;
+    view += inner.view;
+  });
+  handler.push(`${ctx.indent}}`);
+  view += `</cfif>`;
+  ctx.tagsConverted.n++;
+  return { handler, view };
+}
+
+function processCfloop(node: TagNode, ctx: EmitContext): SplitText {
+  if (!tagContainsMarkup(node)) {
+    return { handler: emitToHandler(node, ctx), view: "" };
+  }
+  if (!tagContainsDataAccess(node)) {
+    return {
+      handler: [],
+      view: rewriteViewSource([node], ctx.source, ctx.prcNames)
+    };
+  }
+  const vm = emitViewModelLoop(node, ctx);
+  if (vm) return vm;
+  // Could not build a view model — convert the whole loop to the handler so
+  // its logic is not lost (its markup becomes TODO comments).
+  return { handler: emitToHandler(node, ctx), view: "" };
+}
+
+function processCfswitch(node: TagNode, ctx: EmitContext): SplitText {
+  if (!tagContainsMarkup(node)) {
+    return { handler: emitToHandler(node, ctx), view: "" };
+  }
+  if (!tagContainsDataAccess(node)) {
+    return {
+      handler: [],
+      view: rewriteViewSource([node], ctx.source, ctx.prcNames)
+    };
+  }
+  // A mixed <cfswitch> is uncommon — convert it whole so no logic is lost.
+  return { handler: emitToHandler(node, ctx), view: "" };
+}
+
+// Build a view model for a <cfloop> that wraps both markup and a query: the
+// handler reproduces the loop to fill prc.<query> keyed by iteration, and the
+// view keeps the loop, re-localizing each query from prc per iteration so the
+// surrounding markup is otherwise unchanged. Returns undefined when the loop
+// shape is not one this transform can safely restructure.
+function emitViewModelLoop(
+  node: TagNode,
+  ctx: EmitContext
+): SplitText | undefined {
+  const attrs = node.attributes;
+  let handlerHeader: string;
+  let keyExpr: string;
+
+  if (attrs.has("query")) {
+    const q = attrs.get("query")!.value;
+    if (!/^[A-Za-z_]\w*$/.test(q)) return undefined;
+    const prcQ = ctx.prcNames.has(q.toLowerCase()) ? `prc.${q}` : q;
+    handlerHeader = `cfloop( query="${prcQ}" ) {`;
+    keyExpr = `${prcQ}.currentRow`;
+  } else if (
+    attrs.has("from") &&
+    attrs.has("to") &&
+    (attrs.has("index") || attrs.has("item")) &&
+    !attrs.has("step")
+  ) {
+    const idx = (attrs.get("index") ?? attrs.get("item"))!.value;
+    if (!/^[A-Za-z_]\w*$/.test(idx)) return undefined;
+    const from = unwrapAttr(attrs.get("from")!);
+    const to = unwrapAttr(attrs.get("to")!);
+    handlerHeader = `for ( var ${idx} = ${from}; ${idx} <= ${to}; ${idx}++ ) {`;
+    keyExpr = idx;
+  } else {
+    return undefined;
+  }
+
+  // Every query must be a direct child we can name and convert; anything
+  // deeper (a query inside a nested loop or if) is beyond this transform.
+  const dataChildren: TagNode[] = [];
+  for (const child of node.children) {
+    if (child.type !== "tag") continue;
+    if (DATA_ACCESS_TAGS.has(child.name)) dataChildren.push(child);
+    else if (tagContainsDataAccess(child)) return undefined;
+  }
+  if (dataChildren.length === 0) return undefined;
+
+  const extracted: Array<{ name: string; conversion: string }> = [];
+  for (const dc of dataChildren) {
+    const name = dc.attributes.get("name")?.value;
+    if (!name || !/^[A-Za-z_]\w*$/.test(name)) return undefined;
+    const repl = ctx.cfqueryReplacements.get(dc.range.start);
+    if (typeof repl !== "string") return undefined;
+    extracted.push({ name, conversion: repl });
+  }
+
+  const innerIndent = ctx.indent + ctx.tabUnit;
+
+  const handler: string[] = [];
+  for (const e of extracted) {
+    handler.push(`${ctx.indent}prc.${e.name} = {};`);
+  }
+  handler.push(`${ctx.indent}${handlerHeader}`);
+  for (const e of extracted) {
+    const body = dedentReindent(
+      stripCfscriptWrapper(e.conversion),
+      innerIndent
+    );
+    const keyed = body.replace(
+      new RegExp(`^(\\s*)${escapeRegex(e.name)}(\\s*=\\s*queryExecute)`, "m"),
+      `$1prc.${e.name}[ ${keyExpr} ]$2`
+    );
+    for (const l of keyed.split("\n")) handler.push(l);
+    ctx.tagsConverted.n++;
+  }
+  handler.push(`${ctx.indent}}`);
+
+  // References to the extracted queries are re-localized per iteration in the
+  // view, so the surrounding markup keeps using their original names.
+  const localPrc = new Set(ctx.prcNames);
+  for (const e of extracted) localPrc.delete(e.name.toLowerCase());
+
+  const loopOpen = rewriteViewTagOpen(
+    ctx.source.slice(node.openTagRange.start, node.openTagRange.end),
+    node,
+    ctx.prcNames
+  );
+  const loopClose = node.closeTagRange
+    ? ctx.source.slice(node.closeTagRange.start, node.closeTagRange.end)
+    : "</cfloop>";
+  const restChildren = node.children.filter(
+    (c) => !(c.type === "tag" && DATA_ACCESS_TAGS.has(c.name))
+  );
+  const restView = rewriteViewSource(restChildren, ctx.source, localPrc);
+
+  const indent = lineIndentAt(ctx.source, node.openTagRange.start);
+  let inject = "";
+  for (const e of extracted) {
+    inject +=
+      `\n${indent}${ctx.tabUnit}` +
+      `<cfset ${e.name} = prc.${e.name}[ ${keyExpr} ]>`;
+  }
+
+  ctx.tagsConverted.n++;
+  return { handler, view: loopOpen + inject + restView + loopClose };
+}
+
+function lineIndentAt(source: string, pos: number): string {
+  let start = pos;
+  while (start > 0 && source[start - 1] !== "\n") start--;
+  let i = start;
+  while (i < pos && (source[i] === " " || source[i] === "\t")) i++;
+  return source.slice(start, i);
+}
+
+// True when the tag's subtree contains a data-access tag (<cfquery> etc.).
+function tagContainsDataAccess(node: TagNode): boolean {
+  for (const child of node.children) {
+    if (child.type !== "tag") continue;
+    if (DATA_ACCESS_TAGS.has(child.name)) return true;
+    if (tagContainsDataAccess(child)) return true;
+  }
   return false;
 }
 
@@ -233,13 +463,6 @@ function tagContainsMarkup(node: TagNode): boolean {
     }
   }
   return false;
-}
-
-function sliceNodes(source: string, nodes: CFMLNode[]): string {
-  if (nodes.length === 0) return "";
-  const start = nodes[0].range.start;
-  const end = nodes[nodes.length - 1].range.end;
-  return source.slice(start, end);
 }
 
 // Identifier references that decide which handler variables must be shared

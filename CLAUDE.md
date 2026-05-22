@@ -59,19 +59,27 @@ against `out-test/` — handy for eyeballing output without the extension host.
 
 ## convertCfmToHandler details
 
-`splitHandlerView()` splits top-level nodes into a **handler prefix** and a
-**view suffix** (ColdBox runs the handler, then renders the view).
+`processNodes()` / `processNode()` recursively partition the page into a
+**handler part** (cfscript) and a **view part** (markup). ColdBox runs the
+handler, then renders the view.
 
-- `isViewLike()` classifies a node: raw content/comments are view; `<cfoutput>`
-  is **always** view; `<cfif>`/`<cfloop>`/`<cfswitch>` are view **only when
-  their subtree contains markup** (`tagContainsMarkup()`); everything else is
-  handler logic.
+- Pure logic → handler (via the `emit*` tag converters); pure markup → view
+  (via `rewriteViewSource()`).
+- **Mixed containers** are split. `processCfoutput()` splits its children.
+  `processCfif()` duplicates the condition — guarded logic in the handler,
+  guarded markup in the view. `processCfloop()` over a loop that wraps both
+  markup and a query calls `emitViewModelLoop()`.
+- **View model** (`emitViewModelLoop()`): the handler reproduces the loop to
+  fill `prc.<query> = {}` keyed by `currentRow` (query loops) or the index
+  (from/to loops); the view keeps the loop and injects
+  `<cfset <query> = prc.<query>[<key>]>` so the surrounding markup is otherwise
+  unchanged. Loop shapes it can't restructure fall back to whole-loop-to-handler.
+- `tagContainsDataAccess()` (a `<cfquery>`/`<cfstoredproc>` in the subtree)
+  forces a container to the handler; `tagContainsMarkup()` detects presentation.
 - Handler `<cfset>`/`<cfquery>` names referenced by the view are rescoped to
-  `prc`; `collectViewReferenced()` finds those references (in `#...#`, `<cfif>`
-  conditions, and `query`/`array`/`collection`/`condition` attributes).
-- `rewriteViewSource()` rebuilds the view from its nodes, qualifying those
-  references (`#x#`→`#prc.x#`, `query="x"`→`query="prc.x"`, `<cfif x>`→
-  `<cfif prc.x>`). Raw HTML is copied verbatim.
+  `prc` (`collectViewReferenced()` finds references in `#...#`, `<cfif>`
+  conditions, and `query`/`array`/`collection`/`condition` attributes;
+  `applyScoping()` rewrites the handler, `rewriteViewSource()` the view).
 
 ## Tests
 
