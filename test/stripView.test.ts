@@ -48,6 +48,22 @@ describe("stripView", () => {
     assert.ok(!output.includes("<p>"));
   });
 
+  it("keeps the full cfquery body, SQL and cfqueryparams included", () => {
+    const src = [
+      "<div>",
+      '  <cfquery name="q" datasource="ds">',
+      "    SELECT id, name FROM users",
+      "    WHERE id = <cfqueryparam value=\"#url.id#\" cfsqltype=\"cf_sql_integer\">",
+      "  </cfquery>",
+      "</div>"
+    ].join("\n");
+    const { output } = stripView(src);
+    assert.ok(output.includes("SELECT id, name FROM users"));
+    assert.ok(output.includes("WHERE id = <cfqueryparam"));
+    assert.ok(output.includes("</cfquery>"));
+    assert.ok(!output.includes("<div>"));
+  });
+
   it("does not let a quoted attribute > end an HTML tag early", () => {
     const src = '<a title="1 > 0" href="#"><cfset y = 2></a>';
     const { output } = stripView(src);

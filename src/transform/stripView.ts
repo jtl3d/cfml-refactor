@@ -17,6 +17,11 @@ export interface StripViewResult {
 
 const NAME_CHAR = /[A-Za-z0-9_:]/;
 
+// Tags whose entire body is logic (not presentation) and must be carried over
+// verbatim — including the text between open and close. `<cfquery>` holds SQL,
+// `<cfstoredproc>` its proc call, `<cfscript>` arbitrary code.
+const VERBATIM_BLOCK_TAGS = new Set(["cfscript", "cfquery", "cfstoredproc"]);
+
 export function stripView(source: string): StripViewResult {
   const out: string[] = [];
   let pos = 0;
@@ -36,10 +41,13 @@ export function stripView(source: string): StripViewResult {
 
     const ch = source[pos];
 
-    // CFML tag (open / close / void) or <cfscript> — keep verbatim.
+    // CFML tag (open / close / void). A verbatim-block tag (cfquery, cfscript,
+    // cfstoredproc) is carried over whole — body included — since its contents
+    // are logic, not markup.
     if (ch === "<" && isCfTagStart(source, pos)) {
-      if (isCfscriptOpen(source, pos)) {
-        const end = findCfscriptEnd(source, pos);
+      const blockName = verbatimBlockOpen(source, pos);
+      if (blockName) {
+        const end = findBlockEnd(source, pos, blockName);
         out.push(source.slice(pos, end));
         cfConstructsKept++;
         pos = end;
@@ -111,13 +119,14 @@ function isCloseTag(source: string, pos: number): boolean {
   return source[pos + 1] === "/";
 }
 
-function isCfscriptOpen(source: string, pos: number): boolean {
-  if (isCloseTag(source, pos)) return false;
-  const after = pos + 9; // length of "<cfscript"
-  return (
-    /^<cfscript/i.test(source.slice(pos, after)) &&
-    (after >= source.length || !NAME_CHAR.test(source[after]))
-  );
+// If pos begins an opening verbatim-block tag, return its lowercased name.
+function verbatimBlockOpen(source: string, pos: number): string | null {
+  if (isCloseTag(source, pos)) return null;
+  let i = pos + 1;
+  const nameStart = i;
+  while (i < source.length && NAME_CHAR.test(source[i])) i++;
+  const name = source.slice(nameStart, i).toLowerCase();
+  return VERBATIM_BLOCK_TAGS.has(name) ? name : null;
 }
 
 function htmlTagStartsHere(source: string, pos: number): boolean {
@@ -144,9 +153,11 @@ function findCfCommentEnd(source: string, start: number): number {
   return pos;
 }
 
-function findCfscriptEnd(source: string, start: number): number {
+// Find the index just past the matching `</name>` close tag. If there is none
+// (e.g. a self-closing block tag), fall back to the end of the open tag.
+function findBlockEnd(source: string, start: number, name: string): number {
   const openEnd = findTagEnd(source, start);
-  const re = /<\/cfscript\s*>/gi;
+  const re = new RegExp(`</${name}\\s*>`, "gi");
   re.lastIndex = openEnd;
   const m = re.exec(source);
   return m ? m.index + m[0].length : openEnd;
