@@ -8,6 +8,7 @@ import { registerFindSimilarQueries } from "./commands/findSimilarQueries";
 import { registerHoistQueries } from "./commands/hoistQueries";
 import { registerIndexWorkspace } from "./commands/indexWorkspace";
 import { registerRenameQueries } from "./commands/renameQueries";
+import { registerStripView } from "./commands/stripView";
 import { registerUrlFormToRc } from "./commands/urlFormToRc";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -21,6 +22,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerFindExtractableFunctionsWorkspace(context);
   registerConvertCfmToHandler(context);
   registerUrlFormToRc(context);
+  registerStripView(context);
 }
 
 export function deactivate(): void {

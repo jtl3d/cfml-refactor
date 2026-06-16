@@ -61,6 +61,10 @@
       {
         "command": "cfml-refactor.convertUrlFormToRc",
         "title": "CFML Refactor: Convert url/form References to rc"
+      },
+      {
+        "command": "cfml-refactor.stripViewToLogic",
+        "title": "CFML Refactor: Strip View to Logic"
       }
     ],
     "configuration": {
